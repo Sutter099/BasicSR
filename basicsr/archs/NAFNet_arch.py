@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from basicsr.models.archs.arch_util import LayerNorm2d
 from basicsr.models.archs.local_arch import Local_Base
+from basicsr.utils.registry import ARCH_REGISTRY
 
 class SimpleGate(nn.Module):
     def forward(self, x):
@@ -80,6 +81,7 @@ class NAFBlock(nn.Module):
         return y + x * self.gamma
 
 
+@ARCH_REGISTRY.register()
 class NAFNet(nn.Module):
 
     def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[]):
