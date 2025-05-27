@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from basicsr.archs import build_network
 from basicsr.models.base_model import BaseModel
-from basicsr.utils import get_root_logger, imwrite, tensor2img
+from basicsr.utils import get_root_logger, imwrite, tensor2img, img2tensor
 from basicsr.utils.dist_util import get_dist_info
 from basicsr.utils.registry import MODEL_REGISTRY
 
@@ -29,8 +29,9 @@ class ImageRestorationModel(BaseModel):
         super(ImageRestorationModel, self).__init__(opt)
 
         # define network
-        self.net_g = define_network(deepcopy(opt['network_g']))
+        self.net_g = build_network(opt['network_g'])
         self.net_g = self.model_to_device(self.net_g)
+        self.print_network(self.net_g)
 
         # load pretrained models
         load_path = self.opt['path'].get('pretrain_network_g', None)
@@ -188,7 +189,7 @@ class ImageRestorationModel(BaseModel):
         self.output = (preds / count_mt).to(self.device)
         self.lq = self.origin_lq
 
-    def optimize_parameters(self, current_iter, tb_logger):
+    def optimize_parameters(self, current_iter):
         self.optimizer_g.zero_grad()
 
         if self.opt['train'].get('mixup', False):
@@ -255,7 +256,7 @@ class ImageRestorationModel(BaseModel):
             self.output = torch.cat(outs, dim=0)
         self.net_g.train()
 
-    def dist_validation(self, dataloader, current_iter, tb_logger, save_img, rgb2bgr, use_image):
+    def dist_validation(self, dataloader, current_iter, tb_logger, save_img, rgb2bgr=False, use_image=False):
         dataset_name = dataloader.dataset.opt['name']
         with_metrics = self.opt['val'].get('metrics') is not None
         if with_metrics:
@@ -339,7 +340,8 @@ class ImageRestorationModel(BaseModel):
                     for name, opt_ in opt_metric.items():
                         metric_type = opt_.pop('type')
                         self.metric_results[name] += getattr(
-                            metric_module, metric_type)(visuals['result'], visuals['gt'], **opt_)
+                            metric_module, metric_type)(tensor2img(visuals['result'], rgb2bgr=rgb2bgr),
+                                                        tensor2img(visuals['gt'], rgb2bgr=rgb2bgr), **opt_)
 
             cnt += 1
             if rank == 0:
