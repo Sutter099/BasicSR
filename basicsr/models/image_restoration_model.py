@@ -12,14 +12,16 @@ from copy import deepcopy
 from os import path as osp
 from tqdm import tqdm
 
-from basicsr.models.archs import define_network
+from basicsr.archs import build_network
 from basicsr.models.base_model import BaseModel
 from basicsr.utils import get_root_logger, imwrite, tensor2img
 from basicsr.utils.dist_util import get_dist_info
+from basicsr.utils.registry import MODEL_REGISTRY
 
-loss_module = importlib.import_module('basicsr.models.losses')
+loss_module = importlib.import_module('basicsr.losses.basic_loss')
 metric_module = importlib.import_module('basicsr.metrics')
 
+@MODEL_REGISTRY.register()
 class ImageRestorationModel(BaseModel):
     """Base Deblur model for single image deblur."""
 
