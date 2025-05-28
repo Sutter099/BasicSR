@@ -1,4 +1,5 @@
 import argparse
+import random
 from os import path as osp
 
 from basicsr.utils import scandir
@@ -154,6 +155,52 @@ def prepare_keys_vimeo90k(folder_path, train_list_path, mode):
 
     return img_path_list, keys
 
+def prepare_keys_paired(folder_path):
+    """Prepare image path list and keys for a custom paired dataset."""
+    print(f'Reading image path list from: {folder_path}')
+    img_path_list = sorted(list(scandir(folder_path, suffix='png', recursive=False)))
+    keys = [osp.splitext(osp.basename(p))[0] for p in img_path_list]
+    return img_path_list, keys
+
+
+def create_lmdb_for_custom_dataset(
+    gt_folder, lq_folder,
+    gt_lmdb_train_path, lq_lmdb_train_path,
+    gt_lmdb_val_path, lq_lmdb_val_path,
+    val_ratio=0.1,
+    seed=42
+):
+    """Create LMDB files for a custom paired dataset with train/val split."""
+
+    # --- read GT / LQ image and keys ---
+    gt_paths, gt_keys = prepare_keys_paired(gt_folder)
+    lq_paths, lq_keys = prepare_keys_paired(lq_folder)
+
+    assert gt_keys == lq_keys, "GT and LQ keys do not match!"
+
+    # --- divide train set and validation set ---
+    total_keys = gt_keys
+    total_paths = list(zip(gt_paths, lq_paths, gt_keys))
+
+    random.seed(seed)
+    random.shuffle(total_paths)
+
+    val_size = int(len(total_paths) * val_ratio)
+    val_data = total_paths[:val_size]
+    train_data = total_paths[val_size:]
+
+    # --- distinct list ---
+    train_gt_paths, train_lq_paths, train_keys = zip(*train_data)
+    val_gt_paths, val_lq_paths, val_keys = zip(*val_data)
+
+    # --- create LMDB ---
+    print(f'Creating training LMDB: {len(train_keys)} samples')
+    make_lmdb_from_imgs(gt_folder, gt_lmdb_train_path, train_gt_paths, train_keys)
+    make_lmdb_from_imgs(lq_folder, lq_lmdb_train_path, train_lq_paths, train_keys)
+
+    print(f'Creating validation LMDB: {len(val_keys)} samples')
+    make_lmdb_from_imgs(gt_folder, gt_lmdb_val_path, val_gt_paths, val_keys)
+    make_lmdb_from_imgs(lq_folder, lq_lmdb_val_path, val_lq_paths, val_keys)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
