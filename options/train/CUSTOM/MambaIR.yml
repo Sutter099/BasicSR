@@ -4,40 +4,35 @@ scale: 1
 num_gpu: 1
 manual_seed: 10
 
-# dataset and data loader settings
 datasets:
   train:
-    task: denoising_color
-    noise: 15 # 15/25/50
-    name: DFWB_RGB
+    name: SIDD
     type: PairedImageDataset
-    dataroot_gt: /home/blu/work/Repos/denoise/MambaIR/datasets/DFWB_RGB/HQ
-    dataroot_lq: /home/blu/work/Repos/denoise/MambaIR/datasets/DFWB_RGB/HQ
+    dataroot_gt: datasets/ascnet_data/train/GT.lmdb
+    dataroot_lq: datasets/ascnet_data/train/LQ.lmdb
+
     filename_tmpl: '{}'
     io_backend:
-      type: disk
+      type: lmdb
 
-    gt_size: 96
-    use_hflip: true
-    use_rot: true
+    gt_size: 256
+    use_hflip: false
+    use_rot: false
 
     # data loader
     use_shuffle: true
-    num_worker_per_gpu: 32
-    batch_size_per_gpu: 2
-    dataset_enlarge_ratio: 100
+    num_worker_per_gpu: 8
+    batch_size_per_gpu: 1
+    dataset_enlarge_ratio: 1
     prefetch_mode: ~
 
   val:
-    task: denoising_color
-    noise: 15 # 15/25/50
-    name: CBSD68
+    name: SIDD_val
     type: PairedImageDataset
-    dataroot_gt: /home/blu/work/Repos/denoise/MambaIR/datasets/ColorDN/CBSD68HQ
-    dataroot_lq: /home/blu/work/Repos/denoise/MambaIR/datasets/ColorDN/CBSD68HQ
-    filename_tmpl: '{}'
+    dataroot_gt: datasets/ascnet_data/val/GT.lmdb
+    dataroot_lq: datasets/ascnet_data/val/LQ.lmdb
     io_backend:
-      type: disk
+      type: lmdb
 
 
 # network structures
@@ -45,9 +40,9 @@ network_g:
   type: MambaIRv2
   upscale: 1
   in_chans: 3
-  img_size: 128
+  img_size: 64
   img_range: 1.
-  embed_dim: 128
+  embed_dim: 32
   d_state: 16
   depths: [4, 4, 4,4,4,4]
   num_heads: [4,4,4,4,4,4]
@@ -67,38 +62,38 @@ path:
 # training settings
 train:
   optim_g:
-    type: Adam
-    lr: !!float 2e-4 # for noise 15
-#    lr: !!float 1e-4 # for noise 25/50
-    weight_decay: 0
-    betas: [0.9, 0.99]
+    type: AdamW
+    lr: !!float 1e-3
+    weight_decay: 0.
+    betas: [0.9, 0.9]
 
   scheduler:
     type: MultiStepLR
-    milestones: [ 800000, 1200000, 1400000, 1500000 ] # for noise 15
-    # milestones: [ 400000, 600000, 700000, 750000 ] # for noise 25/50
+    milestones: [ 8000, 12000, 14000, 15000 ]
     gamma: 0.5
 
-  # total_iter: 1600000 # for noise 15
-  total_iter: 160000 # for noise 15
-  # total_iter: 800000 # for noise 25/50
+  total_iter: 20000
   warmup_iter: -1  # no warm up
 
   # losses
   pixel_opt:
-    type: CharbonnierLoss
+    type: PSNRLoss
     loss_weight: 1.0
     reduction: mean
-    eps: !!float 1e-3
 
 # validation settings
 val:
-  val_freq: !!float 5e3
+  val_freq: !!float 2e4
   save_img: false
+  use_image: false
 
   metrics:
     psnr: # metric name, can be arbitrary
       type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
       crop_border: 0
       test_y_channel: false
 
