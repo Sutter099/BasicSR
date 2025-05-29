@@ -2,9 +2,9 @@ import torch.nn as nn
 import torch
 from pytorch_wavelets import DWTForward, DWTInverse
 from torchvision import transforms
-from model.cbam import *
+from basicsr.archs.ascnet_cbam_arch import *
 import cv2
-from utils import weights_init_kaiming
+from basicsr.archs.ascnet_utils import weights_init_kaiming
 import os
 from thop import profile
 from thop import clever_format
@@ -14,6 +14,7 @@ from torch.autograd import Variable
 from torchvision import models
 import numpy as np
 
+from basicsr.utils.registry import ARCH_REGISTRY
 
 
 class DWT(nn.Module):
@@ -289,6 +290,7 @@ class New_block(nn.Module):
         return x
 
 
+@ARCH_REGISTRY.register()
 class ASCNet(nn.Module):
 
     def __init__(self, in_ch, out_ch, feats):
@@ -316,25 +318,25 @@ class ASCNet(nn.Module):
         self.maxpool = nn.MaxPool2d(2)
         self.enhance3 = New_block(4 * feats, reduction=16)
 
-        self.mid1 = single_conv(8 * feats, 4 * feats)
+        # self.mid1 = single_conv(8 * feats, 4 * feats)
         self.mid2 = single_conv(4 * feats, 4 * feats + 4 * feats)
 
         self.pixs = nn.PixelShuffle(2)
 
-        # decoder*****************************************************
-        self.upsample2 = nn.Sequential(
-            nn.ConvTranspose2d(8 * feats, 4 * feats, kernel_size=2, stride=2),
-            # nn.LeakyReLU(inplace=True)
-        )
-        self.upsample1 = nn.Sequential(
-            nn.ConvTranspose2d(4 * feats, 2 * feats, kernel_size=2, stride=2),
-            # nn.LeakyReLU(inplace=True)
-        )
+        # # decoder*****************************************************
+        # self.upsample2 = nn.Sequential(
+        #     nn.ConvTranspose2d(8 * feats, 4 * feats, kernel_size=2, stride=2),
+        #     # nn.LeakyReLU(inplace=True)
+        # )
+        # self.upsample1 = nn.Sequential(
+        #     nn.ConvTranspose2d(4 * feats, 2 * feats, kernel_size=2, stride=2),
+        #     # nn.LeakyReLU(inplace=True)
+        # )
 
-        self.upsample0 = nn.Sequential(
-            nn.ConvTranspose2d(2 * feats, feats, kernel_size=2, stride=2),
-            # nn.LeakyReLU(inplace=True)
-        )
+        # self.upsample0 = nn.Sequential(
+        #     nn.ConvTranspose2d(2 * feats, feats, kernel_size=2, stride=2),
+        #     # nn.LeakyReLU(inplace=True)
+        # )
         self.IDWT = DWTInverse(wave='haar')
 
         # fair *******************************************************
@@ -422,15 +424,3 @@ class ASCNet(nn.Module):
         out = x + inputs
 
         return out
-
-
-if __name__ == '__main__':
-    net = ASCNet(1, 1, feats=32)
-    input = torch.zeros((1, 1, 256, 256), dtype=torch.float32)
-    output = net(input)
-
-    flops, params = profile(net, (input,))
-    print("-" * 50)
-    print('FLOPs = ' + str(flops / 1000 ** 3) + ' G')
-    print('Params = ' + str(params / 1000 ** 2) + ' M')
-    print(output.shape)
