@@ -6,48 +6,79 @@ import torch
 import random
 from tqdm import tqdm
 
-def add_noise(img_tensor, noiseIntL=[0.01, 0.1]):
+
+def add_full_mixed_noise(
+    img_tensor,
+    stripe_intensity=[0.004, 0.02],
+    shot_intensity=0.002,
+    low_freq_intensity=0.1,
+    smoothness=2,
+    low_freq_scale=120
+):
     """
-    add non-uniform noise to a image, keep the size of the image, and the
-    noise of each channel is the same.
-    input:
-        img_tensor: [C, H, W] in [0, 1]
-    output:
-        noisy_img_tensor: [C, H, W] in [0, 1]
+    Adds mixed noise to an image, including smooth stripes, signal-dependent shot noise,
+    and low-frequency noise.
+
+    Args:
+        img_tensor (torch.Tensor): Input tensor of shape [C, H, W] with values in [0, 1].
+        stripe_intensity (list): The intensity range for stripe noise.
+        shot_intensity (float): The intensity factor for shot noise.
+        low_freq_intensity (float): The intensity factor for low-frequency noise.
+        smoothness (int): The smoothness factor for stripe noise (higher value means smoother).
+        low_freq_scale (int): The scale factor for low-frequency noise (higher value means
+                              slower variation / larger patches).
+    Returns:
+        torch.Tensor: The noisy image tensor of shape [C, H, W] with values in [0, 1].
     """
     C, H, W = img_tensor.shape
     img_tensor = img_tensor.unsqueeze(0)  # [1, C, H, W]
-    noise_S = torch.zeros_like(img_tensor)
 
-    # same noise for each channel
-    beta1 = np.random.uniform(noiseIntL[0], noiseIntL[1])
-    beta2 = np.random.uniform(noiseIntL[0], noiseIntL[1])
-    beta3 = np.random.uniform(noiseIntL[0], noiseIntL[1])
-    beta4 = np.random.uniform(noiseIntL[0], noiseIntL[1])
+    # --- 1. Generate smooth stripe noise ---
+    def generate_smooth_template(beta, width, height, smooth_factor):
+        low_res_w = max(2, width // smooth_factor)
+        low_res_noise = np.random.normal(0, beta, size=(1, low_res_w)).astype(np.float32)
+        smooth_noise_row = cv2.resize(low_res_noise, (width, 1), interpolation=cv2.INTER_CUBIC)
+        return torch.from_numpy(np.tile(smooth_noise_row, (height, 1))).float()
 
-    # generate a noise template
-    A1 = np.random.normal(0, beta1, size=W)
-    A2 = np.random.normal(0, beta2, size=W)
-    A3 = np.random.normal(0, beta3, size=W)
-    A4 = np.random.normal(0, beta4, size=W)
+    beta1 = np.random.uniform(stripe_intensity[0], stripe_intensity[1])
+    stripe_template = generate_smooth_template(beta1, W, H, smoothness)
 
-    A1 = np.tile(A1, (H, 1))  # 复制成 [H, W]
-    A2 = np.tile(A2, (H, 1))
-    A3 = np.tile(A3, (H, 1))
-    A4 = np.tile(A4, (H, 1))
+    # --- 2. Generate base map for signal-dependent shot noise ---
+    shot_noise_map = torch.randn_like(img_tensor[0, 0]) # Shape: [H, W]
 
-    A1 = torch.from_numpy(A1).float()
-    A2 = torch.from_numpy(A2).float()
-    A3 = torch.from_numpy(A3).float()
-    A4 = torch.from_numpy(A4).float()
+    # --- 3. Generate low-frequency noise surface ---
+    low_res_h = max(2, H // low_freq_scale)
+    low_res_w = max(2, W // low_freq_scale)
 
-    # each channel share the same noise
+    # Generate a low-resolution random "height map"
+    # Using uniform is more like a slowly varying bias field
+    low_res_map = np.random.uniform(-1, 1, size=(low_res_h, low_res_w)).astype(np.float32)
+
+    # Smoothly upscale to full size using bicubic interpolation
+    smooth_low_freq_map = cv2.resize(low_res_map, (W, H), interpolation=cv2.INTER_CUBIC)
+
+    # Multiply by intensity factor and convert to Tensor
+    low_freq_noise = torch.from_numpy(smooth_low_freq_map) * low_freq_intensity
+
+    # --- 4. Combine all noise types ---
+    noisy_img_tensor = img_tensor.clone()
     for c in range(C):
         img = img_tensor[0, c]
-        noisy = A1 + A2 * img + A3 * A3 * img + A4 * A4 * A4 * img + img
-        noise_S[0, c] = torch.clip(noisy, 0., 1.)
 
-    return noise_S.squeeze(0)  # [C, H, W]
+        # Calculate stripe noise component (signal-dependent)
+        stripe_noise = stripe_template * img
+
+        # Calculate shot noise component (signal-dependent)
+        shot_noise_std = torch.sqrt(torch.clamp(img, min=0) * shot_intensity)
+        shot_noise = shot_noise_map * shot_noise_std
+
+        # Add all components to the original image
+        # Low-frequency noise is additive and superimposed directly onto the image
+        noisy = img + stripe_noise + shot_noise + low_freq_noise
+
+        noisy_img_tensor[0, c] = torch.clip(noisy, 0., 1.)
+
+    return noisy_img_tensor.squeeze(0)  # [C, H, W]
 
 
 def load_image(path):
@@ -75,7 +106,14 @@ def main(args):
         out_path = os.path.join(args.out_dir, name)
 
         img_tensor = load_image(img_path)
-        noisy_tensor = add_noise(img_tensor, noiseIntL=args.noise_range)
+        noisy_tensor = add_full_mixed_noise(
+            img_tensor,
+            stripe_intensity=[0.004, 0.02],
+            shot_intensity=0.002,
+            low_freq_intensity=0.10,
+            smoothness=2,
+            low_freq_scale=120
+        )
 
         save_image(noisy_tensor, out_path)
 
