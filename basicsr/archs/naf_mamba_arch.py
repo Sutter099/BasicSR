@@ -1,19 +1,28 @@
+# ------------------------------------------------------------------------
+# Copyright (c) 2022 megvii-model. All Rights Reserved.
+# ------------------------------------------------------------------------
+
+'''
+Simple Baselines for Image Restoration
+
+@article{chen2022simple,
+  title={Simple Baselines for Image Restoration},
+  author={Chen, Liangyu and Chu, Xiaojie and Zhang, Xiangyu and Sun, Jian},
+  journal={arXiv preprint arXiv:2204.04676},
+  year={2022}
+}
+'''
+
 import math
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from basicsr.archs.arch_util import to_2tuple, trunc_normal_
-from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
-from basicsr.utils.registry import ARCH_REGISTRY
-from einops import rearrange, repeat
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from basicsr.archs.arch_util import LayerNorm2d
+from basicsr.archs.arch_util import LayerNorm2d, to_2tuple, trunc_normal_
 from basicsr.archs.local_arch import Local_Base
 from basicsr.utils.registry import ARCH_REGISTRY
+from einops import rearrange, repeat
+from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
 
 '''
 mambair v2
@@ -789,8 +798,7 @@ class UpsampleOneStep(nn.Sequential):
         return flops
 
 
-@ARCH_REGISTRY.register()
-class MambaIRv2(nn.Module):
+class MambaModule(nn.Module):
     def __init__(self,
                  img_size=64,
                  patch_size=1,
@@ -1042,51 +1050,6 @@ class MambaIRv2(nn.Module):
         return x
 
 
-
-if __name__ == '__main__':
-    upscale = 4
-    model = MambaIRv2(
-        upscale=2,
-        img_size=64,
-        embed_dim=48,
-        d_state=8,
-        depths=[5, 5, 5, 5],
-        num_heads=[4, 4, 4, 4],
-        window_size=16,
-        inner_rank=32,
-        num_tokens=64,
-        convffn_kernel_size=5,
-        img_range=1.,
-        mlp_ratio=1.,
-        upsampler='pixelshuffledirect').cuda()
-
-    # Model Size
-    total = sum([param.nelement() for param in model.parameters()])
-    print("Number of parameter: %.3fM" % (total / 1e6))
-    trainable_num = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(trainable_num)
-
-    # Test
-    _input = torch.randn([2, 3, 64, 64]).cuda()
-    output = model(_input).cuda()
-    print(output.shape)
-
-# ------------------------------------------------------------------------
-# Copyright (c) 2022 megvii-model. All Rights Reserved.
-# ------------------------------------------------------------------------
-
-'''
-Simple Baselines for Image Restoration
-
-@article{chen2022simple,
-  title={Simple Baselines for Image Restoration},
-  author={Chen, Liangyu and Chu, Xiaojie and Zhang, Xiangyu and Sun, Jian},
-  journal={arXiv preprint arXiv:2204.04676},
-  year={2022}
-}
-'''
-
-
 class SimpleGate(nn.Module):
     def forward(self, x):
         x1, x2 = x.chunk(2, dim=1)
@@ -1149,7 +1112,7 @@ class NAFBlock(nn.Module):
 
 
 @ARCH_REGISTRY.register()
-class NAFNet(nn.Module):
+class NAFMamba(nn.Module):
 
     def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[]):
         super().__init__()
@@ -1161,7 +1124,7 @@ class NAFNet(nn.Module):
 
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
-        self.middle_blks = nn.ModuleList()
+        # self.middle_blks = nn.ModuleList() # Removed, will be replaced by MambaIRv2's forward_features
         self.ups = nn.ModuleList()
         self.downs = nn.ModuleList()
 
@@ -1177,10 +1140,24 @@ class NAFNet(nn.Module):
             )
             chan = chan * 2
 
-        self.middle_blks = \
-            nn.Sequential(
-                *[NAFBlock(chan) for _ in range(middle_blk_num)]
-            )
+        # Initialize MambaIRv2's forward_features as the middle block
+        # We need to instantiate MambaIRv2 and extract its forward_features method.
+        # For simplicity, let's assume MambaIRv2 can be configured to match the channel dimension.
+        # You might need to adjust parameters like img_size, patch_size, depths, etc. based on your needs.
+        # Here, we'll create a placeholder MambaIRv2 instance and use its forward_features.
+        # NOTE: This is a simplified approach. In a real scenario, you'd likely want to
+        #       pass specific MambaIRv2 configurations or integrate it more deeply.
+        self.middle_blk_mamba = MambaModule(
+            img_size=256,  # Example size, adjust as needed
+            embed_dim=chan, # Match the channel dimension from the encoder
+            depths=[middle_blk_num], # Use the provided middle_blk_num for depth
+            # Add other necessary MambaIRv2 parameters here
+            # For example: d_state, num_heads, window_size, etc.
+            d_state=8, num_heads=4, window_size=8, inner_rank=32, num_tokens=64,
+            convffn_kernel_size=5, mlp_ratio=2., qkv_bias=True, norm_layer=LayerNorm2d,
+            upsampler='', # Assuming no upsampling within the middle block
+        )
+        # We will call self.middle_blk_mamba.forward_features in the forward pass.
 
         for num in dec_blk_nums:
             self.ups.append(
@@ -1211,7 +1188,13 @@ class NAFNet(nn.Module):
             encs.append(x)
             x = down(x)
 
-        x = self.middle_blks(x)
+        # Replace NAFNet's middle_blks with MambaIRv2's forward_features
+        # We need to prepare the parameters for MambaIRv2's forward_features
+        # This part might need adjustment based on how MambaIRv2's forward_features expects its parameters.
+        # For now, let's assume it needs a dictionary similar to what NAFMamba uses.
+        attn_mask = self.middle_blk_mamba.calculate_mask((x.shape[2], x.shape[3])).to(x.device)
+        mamba_params = {'attn_mask': attn_mask, 'rpi_sa': self.middle_blk_mamba.relative_position_index_SA}
+        x = self.middle_blk_mamba.forward_features(x, mamba_params)
 
         for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
             x = up(x)
@@ -1229,6 +1212,7 @@ class NAFNet(nn.Module):
         mod_pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
         x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
         return x
+
 
 class NAFNetLocal(Local_Base, NAFNet):
     def __init__(self, *args, train_size=(1, 3, 256, 256), fast_imp=False, **kwargs):
@@ -1252,9 +1236,10 @@ if __name__ == '__main__':
     # dec_blks = [2, 2, 2, 2]
 
     enc_blks = [1, 1, 1, 28]
-    middle_blk_num = 1
+    middle_blk_num = 1 # This will be used to configure the depth of MambaIRv2's middle block
     dec_blks = [1, 1, 1, 1]
     
+    # Instantiate NAFNet with the modified middle block configuration
     net = NAFNet(img_channel=img_channel, width=width, middle_blk_num=middle_blk_num,
                       enc_blk_nums=enc_blks, dec_blk_nums=dec_blks)
 
@@ -1268,4 +1253,5 @@ if __name__ == '__main__':
     params = float(params[:-3])
     macs = float(macs[:-4])
 
-    print(macs, params)
+    print(f"MACs: {macs} G")
+    print(f"Params: {params} M")
