@@ -1214,7 +1214,7 @@ class NAFMamba(nn.Module):
         return x
 
 
-class NAFNetLocal(Local_Base, NAFNet):
+class NAFNetLocal(Local_Base, NAFMamba):
     def __init__(self, *args, train_size=(1, 3, 256, 256), fast_imp=False, **kwargs):
         Local_Base.__init__(self)
         NAFNet.__init__(self, *args, **kwargs)
