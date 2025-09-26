@@ -1154,8 +1154,8 @@ class NAFMamba(nn.Module):
             # Add other necessary MambaIRv2 parameters here
             # For example: d_state, num_heads, window_size, etc.
             d_state=8, num_heads=[4, 4, 4, 4], window_size=8, inner_rank=32, num_tokens=64,
-            convffn_kernel_size=5, mlp_ratio=2., qkv_bias=True, norm_layer=LayerNorm2d,
-            upsampler='', # Assuming no upsampling within the middle block
+            convffn_kernel_size=5, mlp_ratio=2., qkv_bias=True, upsampler='',
+            # Assuming no upsampling within the middle block
         )
         # We will call self.middle_blk_mamba.forward_features in the forward pass.
 
