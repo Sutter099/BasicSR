@@ -1147,13 +1147,14 @@ class NAFMamba(nn.Module):
         # Here, we'll create a placeholder MambaIRv2 instance and use its forward_features.
         # NOTE: This is a simplified approach. In a real scenario, you'd likely want to
         #       pass specific MambaIRv2 configurations or integrate it more deeply.
+        mamba_window_size = 8
         self.middle_blk_mamba = MambaModule(
             img_size=256,  # Example size, adjust as needed
             embed_dim=chan, # Match the channel dimension from the encoder
             depths=[middle_blk_num], # Use the provided middle_blk_num for depth
             # Add other necessary MambaIRv2 parameters here
             # For example: d_state, num_heads, window_size, etc.
-            d_state=8, num_heads=[4, 4, 4, 4], window_size=8, inner_rank=32, num_tokens=64,
+            d_state=8, num_heads=[4, 4, 4, 4], window_size=mamba_window_size, inner_rank=32, num_tokens=64,
             convffn_kernel_size=5, mlp_ratio=2., qkv_bias=True, upsampler='',
             # Assuming no upsampling within the middle block
         )
@@ -1173,7 +1174,8 @@ class NAFMamba(nn.Module):
                 )
             )
 
-        self.padder_size = 2 ** len(self.encoders)
+        downsample_factor = 2 ** len(self.encoders)
+        self.padder_size = downsample_factor * mamba_window_size
 
     def forward(self, inp):
         B, C, H, W = inp.shape
