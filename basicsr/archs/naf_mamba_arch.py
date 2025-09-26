@@ -1153,7 +1153,7 @@ class NAFMamba(nn.Module):
             depths=[middle_blk_num], # Use the provided middle_blk_num for depth
             # Add other necessary MambaIRv2 parameters here
             # For example: d_state, num_heads, window_size, etc.
-            d_state=8, num_heads=4, window_size=8, inner_rank=32, num_tokens=64,
+            d_state=8, num_heads=[4, 4, 4, 4], window_size=8, inner_rank=32, num_tokens=64,
             convffn_kernel_size=5, mlp_ratio=2., qkv_bias=True, norm_layer=LayerNorm2d,
             upsampler='', # Assuming no upsampling within the middle block
         )
@@ -1240,7 +1240,7 @@ if __name__ == '__main__':
     dec_blks = [1, 1, 1, 1]
     
     # Instantiate NAFNet with the modified middle block configuration
-    net = NAFNet(img_channel=img_channel, width=width, middle_blk_num=middle_blk_num,
+    net = NAFMamba(img_channel=img_channel, width=width, middle_blk_num=middle_blk_num,
                       enc_blk_nums=enc_blks, dec_blk_nums=dec_blks)
 
 
