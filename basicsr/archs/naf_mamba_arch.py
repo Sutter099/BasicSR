@@ -23,6 +23,7 @@ from basicsr.archs.local_arch import Local_Base
 from basicsr.utils.registry import ARCH_REGISTRY
 from einops import rearrange, repeat
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
+from pytorch_wavelets import DWTForward, DWTInverse
 
 '''
 mambair v2
@@ -1110,6 +1111,37 @@ class NAFBlock(nn.Module):
 
         return y + x * self.gamma
 
+class WaveletDenoiseBlock(nn.Module):
+    def __init__(self, c, num_blks=1, wave='haar'):
+        super().__init__()
+        self.dwt = DWTForward(J=1, mode='zero', wave=wave)
+        self.iwt = DWTInverse(mode='zero', wave=wave)
+
+        # Create separate denoisers for Horizontal and Vertical sub-bands
+        # These denoisers are applied to the LH and HL components
+        self.denoiser_h = nn.Sequential(*[NAFBlock(c) for _ in range(num_blks)])
+        self.denoiser_v = nn.Sequential(*[NAFBlock(c) for _ in range(num_blks)])
+
+    def forward(self, x):
+        # Decompose the input feature map into wavelet sub-bands
+        Yl, Yh = self.dwt(x) # Yl shape: (B, C, H/2, W/2)
+                             # Yh[0] shape: (B, C, 3, H/2, W/2) -> LH, HL, HH
+
+        # Extract the three detail components (LH, HL, HH)
+        lh, hl, hh = torch.unbind(Yh[0], dim=2)
+
+        # Apply specialized denoisers to the horizontal and vertical bands
+        denoised_lh = self.denoiser_h(lh)
+        denoised_hl = self.denoiser_v(hl)
+
+        # Reconstruct the detail components list
+        # We can choose to leave hh unprocessed as stripe noise is less dominant here
+        reconstructed_Yh = [torch.stack([denoised_lh, denoised_hl, hh], dim=2)]
+
+        # Reconstruct the feature map from the processed sub-bands
+        output_feature = self.iwt((Yl, reconstructed_Yh))
+
+        return output_feature
 
 @ARCH_REGISTRY.register()
 class NAFMamba(nn.Module):
@@ -1123,7 +1155,21 @@ class NAFMamba(nn.Module):
                               bias=True)
 
         self.encoders = nn.ModuleList()
-        self.decoders = nn.ModuleList()
+
+        # Decoder for Detail Reconstruction (the main one)
+        self.decoders_detail = nn.ModuleList()
+        self.ups_detail = nn.ModuleList()
+
+        # Decoder for Low-Frequency Noise
+        self.decoders_lf = nn.ModuleList()
+        self.ups_lf = nn.ModuleList()
+        self.ending_lf = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
+
+        # Decoder for Stripe Noise (Wavelet-based)
+        self.decoders_stripe = nn.ModuleList()
+        self.ups_stripe = nn.ModuleList()
+        self.ending_stripe = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
+
         # self.middle_blks = nn.ModuleList() # Removed, will be replaced by MambaIRv2's forward_features
         self.ups = nn.ModuleList()
         self.downs = nn.ModuleList()
@@ -1160,35 +1206,60 @@ class NAFMamba(nn.Module):
         )
         # We will call self.middle_blk_mamba.forward_features in the forward pass.
 
+        # Build the three parallel decoders
         for num in dec_blk_nums:
-            self.ups.append(
-                nn.Sequential(
-                    nn.Conv2d(chan, chan * 2, 1, bias=False),
-                    nn.PixelShuffle(2)
-                )
+            # Upsampling is shared for simplicity, or can be separate
+            up_module = nn.Sequential(
+                nn.Conv2d(chan, chan * 2, 1, bias=False),
+                nn.PixelShuffle(2)
             )
+            self.ups_detail.append(up_module)
+            self.ups_lf.append(up_module)
+            self.ups_stripe.append(up_module)
+
             chan = chan // 2
-            self.decoders.append(
-                nn.Sequential(
-                    *[NAFBlock(chan) for _ in range(num)]
-                )
-            )
+
+            # Detail Decoder Branch
+            self.decoders_detail.append(nn.Sequential(*[NAFBlock(chan) for _ in range(num)]))
+
+            # Low-Frequency Decoder Branch (can be simpler, e.g., fewer blocks)
+            self.decoders_lf.append(nn.Sequential(*[NAFBlock(chan, FFN_Expand=1) for _ in range(num // 2 + 1)]))
+            # self.decoders_lf.append(nn.Sequential(*[NAFBlock(chan, FFN_Expand=1) for _ in range(num)]))
+
+            # Stripe Decoder Branch (using Wavelet Denoising Block)
+            self.decoders_stripe.append(WaveletDenoiseBlock(chan))
 
         downsample_factor = 2 ** len(self.encoders)
         self.padder_size = downsample_factor * mamba_window_size
 
+    # Helper function to run a decoder path
+    def run_decoder(self, decoders, upsamplers, x, skips):
+        for decoder, up, skip in zip(decoders, upsamplers, skips[::-1]):
+            x = up(x)
+            x = x + skip
+            x = decoder(x)
+        return x
+
     def forward(self, inp):
         B, C, H, W = inp.shape
+
+        # print(f"before padding: {inp.shape}") # INFO:
+
         inp = self.check_image_size(inp)
+
+        # print(f"input size: {inp.shape}") # INFO:
 
         x = self.intro(inp)
 
         encs = []
 
+        # print(f"after intro: {x.shape}") # INFO:
+
         for encoder, down in zip(self.encoders, self.downs):
             x = encoder(x)
             encs.append(x)
             x = down(x)
+            # print(f"After downsampling: {x.shape}") # INFO:
 
         # Replace NAFNet's middle_blks with MambaIRv2's forward_features
         # We need to prepare the parameters for MambaIRv2's forward_features
@@ -1198,15 +1269,41 @@ class NAFMamba(nn.Module):
         mamba_params = {'attn_mask': attn_mask, 'rpi_sa': self.middle_blk_mamba.relative_position_index_SA}
         x = self.middle_blk_mamba.forward_features(x, mamba_params)
 
-        for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
-            x = up(x)
-            x = x + enc_skip
-            x = decoder(x)
+        bottle_out = x
 
-        x = self.ending(x)
-        x = x + inp
+        # print(f"After bottleneck: {x.shape}") # INFO:
 
-        return x[:, :, :H, :W]
+        # Detail reconstruction path
+        x_detail = self.run_decoder(self.decoders_detail, self.ups_detail, bottle_out, encs)
+        pred_detail = self.ending(x_detail)
+
+        # Low-frequency noise prediction path
+        x_lf = self.run_decoder(self.decoders_lf, self.ups_lf, bottle_out, encs)
+        pred_lf_noise = self.ending_lf(x_lf)
+
+        # Stripe noise prediction path
+        x_stripe = self.run_decoder(self.decoders_stripe, self.ups_stripe, bottle_out, encs)
+        pred_stripe_noise = self.ending_stripe(x_stripe)
+
+        # print(f"before ending: {x_detail.shape}") # INFO:
+        # print(f"Final output shape before return: {pred_detail.shape}") # INFO:
+
+
+        # --- Final Combination ---
+        # Combine the predictions to get the final clean image
+        final_clean_image = pred_detail - pred_lf_noise - pred_stripe_noise
+
+        # Or if you use a global skip connection from input
+        # final_clean_image = inp - pred_lf_noise - pred_stripe_noise
+
+        # For training, you should return all intermediate predictions for the loss function
+        # return final_clean_image, pred_lf_noise, pred_stripe_noise
+
+        # For inference, just return the final image
+        # Note: The global skip connection 'x + inp' might need to be re-evaluated
+        # in this multi-head setup. Let's return the combined prediction directly.
+
+        return final_clean_image[:, :, :H, :W]
 
     def check_image_size(self, x):
         _, _, h, w = x.size()
