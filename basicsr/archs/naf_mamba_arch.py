@@ -24,6 +24,8 @@ from basicsr.utils.registry import ARCH_REGISTRY
 from einops import rearrange, repeat
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
 
+from basicsr.archs.lklgl_sub_arch import *
+
 '''
 mambair v2
 '''
@@ -1112,19 +1114,18 @@ class NAFBlock(nn.Module):
 
 
 @ARCH_REGISTRY.register()
-class NAFMamba(nn.Module):
+class NAFMamba_LKLGL(nn.Module):
 
-    def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[]):
+    def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[], lglg_blk_num=2): # 1. 添加 lglg_blk_num 参数
         super().__init__()
 
         self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1,
-                              bias=True)
+                               bias=True)
         self.ending = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1,
-                              bias=True)
+                                bias=True)
 
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
-        # self.middle_blks = nn.ModuleList() # Removed, will be replaced by MambaIRv2's forward_features
         self.ups = nn.ModuleList()
         self.downs = nn.ModuleList()
 
@@ -1140,25 +1141,26 @@ class NAFMamba(nn.Module):
             )
             chan = chan * 2
 
-        # Initialize MambaIRv2's forward_features as the middle block
-        # We need to instantiate MambaIRv2 and extract its forward_features method.
-        # For simplicity, let's assume MambaIRv2 can be configured to match the channel dimension.
-        # You might need to adjust parameters like img_size, patch_size, depths, etc. based on your needs.
-        # Here, we'll create a placeholder MambaIRv2 instance and use its forward_features.
-        # NOTE: This is a simplified approach. In a real scenario, you'd likely want to
-        #       pass specific MambaIRv2 configurations or integrate it more deeply.
+        # =====================================================================
+        # === 2. 在 __init__ 中实例化 LKLGL 模块 ===
+        # =====================================================================
+        self.lklgl_blocks = nn.ModuleList([
+            LGLBlock(
+                dim=chan,          # dim 必须与当前通道数 chan 匹配
+                num_heads=8,       # 注意力头数，可调整
+                sr_ratio=2         # sr_ratio > 1 来启用空间缩减，提高效率
+            )
+            for _ in range(lglg_blk_num)])
+        # =====================================================================
+
         mamba_window_size = 8
         self.middle_blk_mamba = MambaModule(
-            img_size=256,  # Example size, adjust as needed
-            embed_dim=chan, # Match the channel dimension from the encoder
-            depths=[middle_blk_num], # Use the provided middle_blk_num for depth
-            # Add other necessary MambaIRv2 parameters here
-            # For example: d_state, num_heads, window_size, etc.
+            img_size=256,
+            embed_dim=chan, 
+            depths=[middle_blk_num], 
             d_state=8, num_heads=[4, 4, 4, 4], window_size=mamba_window_size, inner_rank=32, num_tokens=64,
             convffn_kernel_size=5, mlp_ratio=2., qkv_bias=True, upsampler='',
-            # Assuming no upsampling within the middle block
         )
-        # We will call self.middle_blk_mamba.forward_features in the forward pass.
 
         for num in dec_blk_nums:
             self.ups.append(
@@ -1190,10 +1192,13 @@ class NAFMamba(nn.Module):
             encs.append(x)
             x = down(x)
 
-        # Replace NAFNet's middle_blks with MambaIRv2's forward_features
-        # We need to prepare the parameters for MambaIRv2's forward_features
-        # This part might need adjustment based on how MambaIRv2's forward_features expects its parameters.
-        # For now, let's assume it needs a dictionary similar to what NAFMamba uses.
+        # =====================================================================
+        # === 3. 在 forward 中调用 LKLGL 模块 ===
+        # =====================================================================
+        for blk in self.lklgl_blocks:
+            x = blk(x)
+        # =====================================================================
+
         attn_mask = self.middle_blk_mamba.calculate_mask((x.shape[2], x.shape[3])).to(x.device)
         mamba_params = {'attn_mask': attn_mask, 'rpi_sa': self.middle_blk_mamba.relative_position_index_SA}
         x = self.middle_blk_mamba.forward_features(x, mamba_params)
@@ -1214,46 +1219,3 @@ class NAFMamba(nn.Module):
         mod_pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
         x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
         return x
-
-
-class NAFNetLocal(Local_Base, NAFMamba):
-    def __init__(self, *args, train_size=(1, 3, 256, 256), fast_imp=False, **kwargs):
-        Local_Base.__init__(self)
-        NAFNet.__init__(self, *args, **kwargs)
-
-        N, C, H, W = train_size
-        base_size = (int(H * 1.5), int(W * 1.5))
-
-        self.eval()
-        with torch.no_grad():
-            self.convert(base_size=base_size, train_size=train_size, fast_imp=fast_imp)
-
-
-if __name__ == '__main__':
-    img_channel = 3
-    width = 32
-
-    # enc_blks = [2, 2, 4, 8]
-    # middle_blk_num = 12
-    # dec_blks = [2, 2, 2, 2]
-
-    enc_blks = [1, 1, 1, 28]
-    middle_blk_num = 1 # This will be used to configure the depth of MambaIRv2's middle block
-    dec_blks = [1, 1, 1, 1]
-    
-    # Instantiate NAFNet with the modified middle block configuration
-    net = NAFMamba(img_channel=img_channel, width=width, middle_blk_num=middle_blk_num,
-                      enc_blk_nums=enc_blks, dec_blk_nums=dec_blks)
-
-
-    inp_shape = (3, 256, 256)
-
-    from ptflops import get_model_complexity_info
-
-    macs, params = get_model_complexity_info(net, inp_shape, verbose=False, print_per_layer_stat=False)
-
-    params = float(params[:-3])
-    macs = float(macs[:-4])
-
-    print(f"MACs: {macs} G")
-    print(f"Params: {params} M")
