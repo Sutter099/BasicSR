@@ -30,7 +30,7 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 8
-    batch_size_per_gpu: 1
+    batch_size_per_gpu: 4
     dataset_enlarge_ratio: 1
     prefetch_mode: ~
 
@@ -48,6 +48,7 @@ network_g:
   width: 64
   enc_blk_nums: [2, 2, 4, 8]
   middle_blk_num: 12
+  lglg_blk_num: 6
   dec_blk_nums: [2, 2, 2, 2]
 
 # path
