@@ -25,6 +25,8 @@ from einops import rearrange, repeat
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
 from pytorch_wavelets import DWTForward, DWTInverse
 
+from basicsr.archs.afem_sub_arch import *
+
 '''
 mambair v2
 '''
@@ -1232,6 +1234,8 @@ class NAFMamba(nn.Module):
         downsample_factor = 2 ** len(self.encoders)
         self.padder_size = downsample_factor * mamba_window_size
 
+        self.fusion_head = FinalFusionModule(in_channels=img_channel * 3, out_channels=img_channel)
+
     # Helper function to run a decoder path
     def run_decoder(self, decoders, upsamplers, x, skips):
         for decoder, up, skip in zip(decoders, upsamplers, skips[::-1]):
@@ -1291,7 +1295,7 @@ class NAFMamba(nn.Module):
 
         # --- Final Combination ---
         # Combine the predictions to get the final clean image
-        final_clean_image = pred_detail - pred_lf_noise - pred_stripe_noise
+        final_clean_image = self.fusion_head(pred_detail, pred_lf_noise, pred_stripe_noise)
 
         # Or if you use a global skip connection from input
         # final_clean_image = inp - pred_lf_noise - pred_stripe_noise
@@ -1311,46 +1315,3 @@ class NAFMamba(nn.Module):
         mod_pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
         x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
         return x
-
-
-class NAFNetLocal(Local_Base, NAFMamba):
-    def __init__(self, *args, train_size=(1, 3, 256, 256), fast_imp=False, **kwargs):
-        Local_Base.__init__(self)
-        NAFNet.__init__(self, *args, **kwargs)
-
-        N, C, H, W = train_size
-        base_size = (int(H * 1.5), int(W * 1.5))
-
-        self.eval()
-        with torch.no_grad():
-            self.convert(base_size=base_size, train_size=train_size, fast_imp=fast_imp)
-
-
-if __name__ == '__main__':
-    img_channel = 3
-    width = 32
-
-    # enc_blks = [2, 2, 4, 8]
-    # middle_blk_num = 12
-    # dec_blks = [2, 2, 2, 2]
-
-    enc_blks = [1, 1, 1, 28]
-    middle_blk_num = 1 # This will be used to configure the depth of MambaIRv2's middle block
-    dec_blks = [1, 1, 1, 1]
-    
-    # Instantiate NAFNet with the modified middle block configuration
-    net = NAFMamba(img_channel=img_channel, width=width, middle_blk_num=middle_blk_num,
-                      enc_blk_nums=enc_blks, dec_blk_nums=dec_blks)
-
-
-    inp_shape = (3, 256, 256)
-
-    from ptflops import get_model_complexity_info
-
-    macs, params = get_model_complexity_info(net, inp_shape, verbose=False, print_per_layer_stat=False)
-
-    params = float(params[:-3])
-    macs = float(macs[:-4])
-
-    print(f"MACs: {macs} G")
-    print(f"Params: {params} M")
