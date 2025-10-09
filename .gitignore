@@ -1,3 +1,6 @@
+# ignore softlink
+datasets
+
 # ignored folders
 datasets/*
 experiments/*
