@@ -47,7 +47,7 @@ network_g:
   type: NAFMamba
   width: 64
   enc_blk_nums: [2, 2, 4, 8]
-  middle_blk_num: 12
+  middle_blk_num: [3, 3]
   dec_blk_nums: [2, 2, 2, 2]
 
 # path

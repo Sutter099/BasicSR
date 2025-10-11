@@ -1146,7 +1146,7 @@ class WaveletDenoiseBlock(nn.Module):
 @ARCH_REGISTRY.register()
 class NAFMamba(nn.Module):
 
-    def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[]):
+    def __init__(self, img_channel=3, width=16, middle_blk_num=[], enc_blk_nums=[], dec_blk_nums=[]):
         super().__init__()
 
         self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1,
@@ -1197,7 +1197,7 @@ class NAFMamba(nn.Module):
         self.middle_blk_mamba = MambaModule(
             img_size=256,  # Example size, adjust as needed
             embed_dim=chan, # Match the channel dimension from the encoder
-            depths=[middle_blk_num], # Use the provided middle_blk_num for depth
+            depths=middle_blk_num, # Use the provided middle_blk_num for depth
             # Add other necessary MambaIRv2 parameters here
             # For example: d_state, num_heads, window_size, etc.
             d_state=8, num_heads=[4, 4, 4, 4], window_size=mamba_window_size, inner_rank=32, num_tokens=64,
@@ -1335,7 +1335,7 @@ if __name__ == '__main__':
     # dec_blks = [2, 2, 2, 2]
 
     enc_blks = [1, 1, 1, 28]
-    middle_blk_num = 1 # This will be used to configure the depth of MambaIRv2's middle block
+    middle_blk_num = [1] # This will be used to configure the depth of MambaIRv2's middle block
     dec_blks = [1, 1, 1, 1]
     
     # Instantiate NAFNet with the modified middle block configuration
