@@ -25,6 +25,7 @@ from einops import rearrange, repeat
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
 from pytorch_wavelets import DWTForward, DWTInverse
 
+from basicsr.archs.wtconv2d import *
 '''
 mambair v2
 '''
@@ -1227,7 +1228,7 @@ class NAFMamba(nn.Module):
             # self.decoders_lf.append(nn.Sequential(*[NAFBlock(chan, FFN_Expand=1) for _ in range(num)]))
 
             # Stripe Decoder Branch (using Wavelet Denoising Block)
-            self.decoders_stripe.append(WaveletDenoiseBlock(chan))
+            self.decoders_stripe.append(WTConv2d(chan, chan))
 
         downsample_factor = 2 ** len(self.encoders)
         self.padder_size = downsample_factor * mamba_window_size
