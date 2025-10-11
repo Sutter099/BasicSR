@@ -1,0 +1,44 @@
+name: NAFMamba
+model_type: ImageRestorationModel
+scale: 1
+num_gpu: 1  # set num_gpu: 0 for cpu mode
+manual_seed: 10
+
+datasets:
+  test_1:  # the 1st test dataset
+    name: SIDD
+    type: PairedImageDataset
+    dataroot_gt: datasets/All
+    dataroot_lq: datasets/All_noise
+    cache_data: True
+    io_backend:
+      type: disk
+    num_frame: -1  # not needed
+
+# network structures
+network_g:
+  type: NAFMamba
+  width: 64
+  enc_blk_nums: [2, 2, 4, 8]
+  middle_blk_num: [3, 3]
+  dec_blk_nums: [2, 2, 2, 2]
+
+# path
+path:
+  pretrain_network_g: experiments/NAFMamba_33mamba/models/net_g_latest.pth
+  strict_load_g: true
+
+# validation settings
+val:
+  save_img: true
+  suffix: ~  # add suffix to saved images, if None, use exp name
+
+  metrics:
+    psnr: # metric name, can be arbitrary
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
