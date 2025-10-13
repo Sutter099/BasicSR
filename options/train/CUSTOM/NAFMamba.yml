@@ -6,7 +6,7 @@
 # Copyright 2018-2020 BasicSR Authors
 # ------------------------------------------------------------------------
 # general settings
-name: NAFMamba
+name: MambaNaf
 model_type: ImageRestorationModel
 scale: 1
 num_gpu: 1
@@ -44,11 +44,25 @@ datasets:
 
 
 network_g:
-  type: NAFMamba
-  width: 64
-  enc_blk_nums: [2, 2, 4, 8]
-  middle_blk_num: [3, 3]
-  dec_blk_nums: [2, 2, 2, 2]
+  type: MambaNaf
+  upscale: 1
+  in_chans: 3
+  img_size: 64
+  img_range: 1.
+  embed_dim: 32
+  d_state: 16
+  depths: [4, 4, 4,4,4,4]
+  num_heads: [4,4,4,4,4,4]
+  window_size: 16
+  inner_rank: 64
+  num_tokens: 128
+  convffn_kernel_size: 5
+  mlp_ratio: 2.
+  # nafnet params
+  naf_width: 64
+  naf_middle_blk_num: 1
+  naf_enc_blk_nums: [1, 1, 2, 4]
+  naf_dec_blk_nums: [1, 1, 1, 1]
 
 # path
 path:
