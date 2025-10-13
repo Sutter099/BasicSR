@@ -799,7 +799,166 @@ class UpsampleOneStep(nn.Sequential):
         return flops
 
 
-class MambaModule(nn.Module):
+class SimpleGate(nn.Module):
+    def forward(self, x):
+        x1, x2 = x.chunk(2, dim=1)
+        return x1 * x2
+
+class NAFBlock(nn.Module):
+    def __init__(self, c, DW_Expand=2, FFN_Expand=2, drop_out_rate=0.):
+        super().__init__()
+        dw_channel = c * DW_Expand
+        self.conv1 = nn.Conv2d(in_channels=c, out_channels=dw_channel, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
+        self.conv2 = nn.Conv2d(in_channels=dw_channel, out_channels=dw_channel, kernel_size=3, padding=1, stride=1, groups=dw_channel,
+                               bias=True)
+        self.conv3 = nn.Conv2d(in_channels=dw_channel // 2, out_channels=c, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
+
+        # Simplified Channel Attention
+        self.sca = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels=dw_channel // 2, out_channels=dw_channel // 2, kernel_size=1, padding=0, stride=1,
+                      groups=1, bias=True),
+        )
+
+        # SimpleGate
+        self.sg = SimpleGate()
+
+        ffn_channel = FFN_Expand * c
+        self.conv4 = nn.Conv2d(in_channels=c, out_channels=ffn_channel, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
+        self.conv5 = nn.Conv2d(in_channels=ffn_channel // 2, out_channels=c, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
+
+        self.norm1 = LayerNorm2d(c)
+        self.norm2 = LayerNorm2d(c)
+
+        self.dropout1 = nn.Dropout(drop_out_rate) if drop_out_rate > 0. else nn.Identity()
+        self.dropout2 = nn.Dropout(drop_out_rate) if drop_out_rate > 0. else nn.Identity()
+
+        self.beta = nn.Parameter(torch.zeros((1, c, 1, 1)), requires_grad=True)
+        self.gamma = nn.Parameter(torch.zeros((1, c, 1, 1)), requires_grad=True)
+
+    def forward(self, inp):
+        x = inp
+
+        x = self.norm1(x)
+
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.sg(x)
+        x = x * self.sca(x)
+        x = self.conv3(x)
+
+        x = self.dropout1(x)
+
+        y = inp + x * self.beta
+
+        x = self.conv4(self.norm2(y))
+        x = self.sg(x)
+        x = self.conv5(x)
+
+        x = self.dropout2(x)
+
+        return y + x * self.gamma
+
+
+class NAFNet(nn.Module):
+
+    def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[]):
+        super().__init__()
+
+        self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1,
+                              bias=True)
+        self.ending = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1,
+                              bias=True)
+
+        self.encoders = nn.ModuleList()
+        self.decoders = nn.ModuleList()
+        self.middle_blks = nn.ModuleList()
+        self.ups = nn.ModuleList()
+        self.downs = nn.ModuleList()
+
+        chan = width
+        for num in enc_blk_nums:
+            self.encoders.append(
+                nn.Sequential(
+                    *[NAFBlock(chan) for _ in range(num)]
+                )
+            )
+            self.downs.append(
+                nn.Conv2d(chan, 2*chan, 2, 2)
+            )
+            chan = chan * 2
+
+        self.middle_blks = \
+            nn.Sequential(
+                *[NAFBlock(chan) for _ in range(middle_blk_num)]
+            )
+
+        for num in dec_blk_nums:
+            self.ups.append(
+                nn.Sequential(
+                    nn.Conv2d(chan, chan * 2, 1, bias=False),
+                    nn.PixelShuffle(2)
+                )
+            )
+            chan = chan // 2
+            self.decoders.append(
+                nn.Sequential(
+                    *[NAFBlock(chan) for _ in range(num)]
+                )
+            )
+
+        self.padder_size = 2 ** len(self.encoders)
+
+    def forward(self, inp):
+        B, C, H, W = inp.shape
+        inp = self.check_image_size(inp)
+
+        x = self.intro(inp)
+
+        encs = []
+
+        for encoder, down in zip(self.encoders, self.downs):
+            x = encoder(x)
+            encs.append(x)
+            x = down(x)
+
+        x = self.middle_blks(x)
+
+        for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
+            x = up(x)
+            x = x + enc_skip
+            x = decoder(x)
+
+        x = self.ending(x)
+        x = x + inp
+
+        return x[:, :, :H, :W]
+
+    def check_image_size(self, x):
+        _, _, h, w = x.size()
+        mod_pad_h = (self.padder_size - h % self.padder_size) % self.padder_size
+        mod_pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
+        x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
+        return x
+
+
+class DynamicFusionBlock(nn.Module):
+    """
+    Dynamically fuses features from the global (denoise) network and the
+    detail enhancement network.
+    """
+    def __init__(self, in_channels, out_channels=3, kernel_size=1):
+        super(DynamicFusionBlock, self).__init__()
+        self.fusion_conv = nn.Conv2d(in_channels * 2, out_channels, kernel_size)
+        self.alpha = nn.Parameter(torch.ones(1))
+        self.beta = nn.Parameter(torch.ones(1))
+
+    def forward(self, global_feature, detail_feature):
+        fused_feature = torch.cat([global_feature * self.alpha, detail_feature * self.beta], dim=1)
+        return self.fusion_conv(fused_feature)
+
+@ARCH_REGISTRY.register()
+class MambaNaf(nn.Module):
     def __init__(self,
                  img_size=64,
                  patch_size=1,
@@ -818,10 +977,15 @@ class MambaModule(nn.Module):
                  ape=False,
                  patch_norm=True,
                  use_checkpoint=False,
-                 upscale=2,
+                 upscale=1,
                  img_range=1.,
                  upsampler='',
                  resi_connection='1conv',
+                 # NAFNet specific parameters added for internal instantiation
+                 naf_width=64,
+                 naf_middle_blk_num=1,
+                 naf_enc_blk_nums=(1, 1, 2, 4),
+                 naf_dec_blk_nums=(1, 1, 1, 1),
                  **kwargs):
         super().__init__()
         num_in_ch = in_chans
@@ -912,29 +1076,21 @@ class MambaModule(nn.Module):
                 nn.Conv2d(embed_dim // 4, embed_dim, 3, 1, 1))
 
         # ------------------------- 3, high quality image reconstruction ------------------------- #
-        if self.upsampler == 'pixelshuffle':
-            # for classical SR
-            self.conv_before_upsample = nn.Sequential(
-                nn.Conv2d(embed_dim, num_feat, 3, 1, 1), nn.LeakyReLU(inplace=True))
-            self.upsample = Upsample(upscale, num_feat)
-            self.conv_last = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
-        elif self.upsampler == 'pixelshuffledirect':
-            # for lightweight SR (to save parameters)
-            self.upsample = UpsampleOneStep(upscale, embed_dim, num_out_ch,
-                                            (patches_resolution[0], patches_resolution[1]))
-        elif self.upsampler == 'nearest+conv':
-            # for real-world SR (less artifacts)
-            assert self.upscale == 4, 'only support x4 now.'
-            self.conv_before_upsample = nn.Sequential(
-                nn.Conv2d(embed_dim, num_feat, 3, 1, 1), nn.LeakyReLU(inplace=True))
-            self.conv_up1 = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
-            self.conv_up2 = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
-            self.conv_hr = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
-            self.conv_last = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
-            self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
-        else:
-            # for image denoising and JPEG compression artifact reduction
-            self.conv_last = nn.Conv2d(embed_dim, num_out_ch, 3, 1, 1)
+        # for image denoising and JPEG compression artifact reduction
+        self.conv_last = nn.Conv2d(embed_dim, num_out_ch, 3, 1, 1)
+
+        # ------------------------- 4, NAFNet and Fusion Block Init ------------------------- #
+        # Instantiate the Detail Enhance Network (NAFNet)
+        self.detail_enhance_net = NAFNet(
+            img_channel=in_chans,
+            width=naf_width,
+            middle_blk_num=naf_middle_blk_num,
+            enc_blk_nums=naf_enc_blk_nums,
+            dec_blk_nums=naf_dec_blk_nums
+        )
+
+        # Instantiate the Dynamic Fusion Block
+        self.fusion_block = DynamicFusionBlock(in_channels=in_chans, out_channels=in_chans)
 
         self.apply(self._init_weights)
 
@@ -1018,30 +1174,28 @@ class MambaModule(nn.Module):
         attn_mask = self.calculate_mask([h, w]).to(x.device)
         params = {'attn_mask': attn_mask, 'rpi_sa': self.relative_position_index_SA}
 
-        if self.upsampler == 'pixelshuffle':
-            # for classical SR
-            x = self.conv_first(x)
-            x = self.conv_after_body(self.forward_features(x, params)) + x
-            x = self.conv_before_upsample(x)
-            x = self.conv_last(self.upsample(x))
-        elif self.upsampler == 'pixelshuffledirect':
-            # for lightweight SR
-            x = self.conv_first(x)
-            x = self.conv_after_body(self.forward_features(x, params)) + x
-            x = self.upsample(x)
-        elif self.upsampler == 'nearest+conv':
-            # for real-world SR
-            x = self.conv_first(x)
-            x = self.conv_after_body(self.forward_features(x, params)) + x
-            x = self.conv_before_upsample(x)
-            x = self.lrelu(self.conv_up1(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
-            x = self.lrelu(self.conv_up2(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
-            x = self.conv_last(self.lrelu(self.conv_hr(x)))
-        else:
-            # for image denoising and JPEG compression artifact reduction
-            x_first = self.conv_first(x)
-            res = self.conv_after_body(self.forward_features(x_first, params)) + x_first
-            x = x + self.conv_last(res)
+        # Store original pre-processed input for the final global residual connection
+        input_residual = x
+
+        # --- Stage 1: MambaIRv2 as the global Denoise Network ---
+        # The core Mamba logic from the original denoising path
+        x_first = self.conv_first(x)
+        res = self.conv_after_body(self.forward_features(x_first, params)) + x_first
+
+        # Get the intermediate denoised image from the Mamba part
+        # Note: We apply the final residual connection here to get a clean image output
+        global_denoised = input_residual + self.conv_last(res)
+
+        # --- Stage 2: NAFNet as the Detail Enhance Network ---
+        # We feed the output of the Mamba stage into NAFNet
+        detail_enhanced = self.detail_enhance_net(global_denoised)
+
+        # --- Stage 3: Dynamic Fusion ---
+        # Dynamically fuse the features from both network stages
+        fused_output = self.fusion_block(global_denoised, detail_enhanced)
+
+        # Final output with a global residual connection to the original input
+        x = input_residual + fused_output
 
         x = x / self.img_range + self.mean
 
@@ -1051,306 +1205,31 @@ class MambaModule(nn.Module):
         return x
 
 
-class SimpleGate(nn.Module):
-    def forward(self, x):
-        x1, x2 = x.chunk(2, dim=1)
-        return x1 * x2
-
-class NAFBlock(nn.Module):
-    def __init__(self, c, DW_Expand=2, FFN_Expand=2, drop_out_rate=0.):
-        super().__init__()
-        dw_channel = c * DW_Expand
-        self.conv1 = nn.Conv2d(in_channels=c, out_channels=dw_channel, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
-        self.conv2 = nn.Conv2d(in_channels=dw_channel, out_channels=dw_channel, kernel_size=3, padding=1, stride=1, groups=dw_channel,
-                               bias=True)
-        self.conv3 = nn.Conv2d(in_channels=dw_channel // 2, out_channels=c, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
-        
-        # Simplified Channel Attention
-        self.sca = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_channels=dw_channel // 2, out_channels=dw_channel // 2, kernel_size=1, padding=0, stride=1,
-                      groups=1, bias=True),
-        )
-
-        # SimpleGate
-        self.sg = SimpleGate()
-
-        ffn_channel = FFN_Expand * c
-        self.conv4 = nn.Conv2d(in_channels=c, out_channels=ffn_channel, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
-        self.conv5 = nn.Conv2d(in_channels=ffn_channel // 2, out_channels=c, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
-
-        self.norm1 = LayerNorm2d(c)
-        self.norm2 = LayerNorm2d(c)
-
-        self.dropout1 = nn.Dropout(drop_out_rate) if drop_out_rate > 0. else nn.Identity()
-        self.dropout2 = nn.Dropout(drop_out_rate) if drop_out_rate > 0. else nn.Identity()
-
-        self.beta = nn.Parameter(torch.zeros((1, c, 1, 1)), requires_grad=True)
-        self.gamma = nn.Parameter(torch.zeros((1, c, 1, 1)), requires_grad=True)
-
-    def forward(self, inp):
-        x = inp
-
-        x = self.norm1(x)
-
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.sg(x)
-        x = x * self.sca(x)
-        x = self.conv3(x)
-
-        x = self.dropout1(x)
-
-        y = inp + x * self.beta
-
-        x = self.conv4(self.norm2(y))
-        x = self.sg(x)
-        x = self.conv5(x)
-
-        x = self.dropout2(x)
-
-        return y + x * self.gamma
-
-class WaveletDenoiseBlock(nn.Module):
-    def __init__(self, c, num_blks=1, wave='haar'):
-        super().__init__()
-        self.dwt = DWTForward(J=1, mode='zero', wave=wave)
-        self.iwt = DWTInverse(mode='zero', wave=wave)
-
-        # Create separate denoisers for Horizontal and Vertical sub-bands
-        # These denoisers are applied to the LH and HL components
-        self.denoiser_h = nn.Sequential(*[NAFBlock(c) for _ in range(num_blks)])
-        self.denoiser_v = nn.Sequential(*[NAFBlock(c) for _ in range(num_blks)])
-
-    def forward(self, x):
-        # Decompose the input feature map into wavelet sub-bands
-        Yl, Yh = self.dwt(x) # Yl shape: (B, C, H/2, W/2)
-                             # Yh[0] shape: (B, C, 3, H/2, W/2) -> LH, HL, HH
-
-        # Extract the three detail components (LH, HL, HH)
-        lh, hl, hh = torch.unbind(Yh[0], dim=2)
-
-        # Apply specialized denoisers to the horizontal and vertical bands
-        denoised_lh = self.denoiser_h(lh)
-        denoised_hl = self.denoiser_v(hl)
-
-        # Reconstruct the detail components list
-        # We can choose to leave hh unprocessed as stripe noise is less dominant here
-        reconstructed_Yh = [torch.stack([denoised_lh, denoised_hl, hh], dim=2)]
-
-        # Reconstruct the feature map from the processed sub-bands
-        output_feature = self.iwt((Yl, reconstructed_Yh))
-
-        return output_feature
-
-@ARCH_REGISTRY.register()
-class NAFMamba(nn.Module):
-
-    def __init__(self, img_channel=3, width=16, middle_blk_num=[], enc_blk_nums=[], dec_blk_nums=[]):
-        super().__init__()
-
-        self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1,
-                              bias=True)
-        self.ending = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1,
-                              bias=True)
-
-        self.encoders = nn.ModuleList()
-
-        # Decoder for Detail Reconstruction (the main one)
-        self.decoders_detail = nn.ModuleList()
-        self.ups_detail = nn.ModuleList()
-
-        # Decoder for Low-Frequency Noise
-        self.decoders_lf = nn.ModuleList()
-        self.ups_lf = nn.ModuleList()
-        self.ending_lf = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
-
-        # Decoder for Stripe Noise (Wavelet-based)
-        self.decoders_stripe = nn.ModuleList()
-        self.ups_stripe = nn.ModuleList()
-        self.ending_stripe = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
-
-        # self.middle_blks = nn.ModuleList() # Removed, will be replaced by MambaIRv2's forward_features
-        self.ups = nn.ModuleList()
-        self.downs = nn.ModuleList()
-
-        chan = width
-        for num in enc_blk_nums:
-            self.encoders.append(
-                nn.Sequential(
-                    *[NAFBlock(chan) for _ in range(num)]
-                )
-            )
-            self.downs.append(
-                nn.Conv2d(chan, 2*chan, 2, 2)
-            )
-            chan = chan * 2
-
-        # Initialize MambaIRv2's forward_features as the middle block
-        # We need to instantiate MambaIRv2 and extract its forward_features method.
-        # For simplicity, let's assume MambaIRv2 can be configured to match the channel dimension.
-        # You might need to adjust parameters like img_size, patch_size, depths, etc. based on your needs.
-        # Here, we'll create a placeholder MambaIRv2 instance and use its forward_features.
-        # NOTE: This is a simplified approach. In a real scenario, you'd likely want to
-        #       pass specific MambaIRv2 configurations or integrate it more deeply.
-        mamba_window_size = 8
-        self.middle_blk_mamba = MambaModule(
-            img_size=256,  # Example size, adjust as needed
-            embed_dim=chan, # Match the channel dimension from the encoder
-            depths=middle_blk_num, # Use the provided middle_blk_num for depth
-            # Add other necessary MambaIRv2 parameters here
-            # For example: d_state, num_heads, window_size, etc.
-            d_state=8, num_heads=[4, 4, 4, 4], window_size=mamba_window_size, inner_rank=32, num_tokens=64,
-            convffn_kernel_size=5, mlp_ratio=2., qkv_bias=True, upsampler='',
-            # Assuming no upsampling within the middle block
-        )
-        # We will call self.middle_blk_mamba.forward_features in the forward pass.
-
-        # Build the three parallel decoders
-        for num in dec_blk_nums:
-            # Upsampling is shared for simplicity, or can be separate
-            up_module = nn.Sequential(
-                nn.Conv2d(chan, chan * 2, 1, bias=False),
-                nn.PixelShuffle(2)
-            )
-            self.ups_detail.append(up_module)
-            self.ups_lf.append(up_module)
-            self.ups_stripe.append(up_module)
-
-            chan = chan // 2
-
-            # Detail Decoder Branch
-            self.decoders_detail.append(nn.Sequential(*[NAFBlock(chan) for _ in range(num)]))
-
-            # Low-Frequency Decoder Branch (can be simpler, e.g., fewer blocks)
-            self.decoders_lf.append(nn.Sequential(*[NAFBlock(chan, FFN_Expand=1) for _ in range(num // 2 + 1)]))
-            # self.decoders_lf.append(nn.Sequential(*[NAFBlock(chan, FFN_Expand=1) for _ in range(num)]))
-
-            # Stripe Decoder Branch (using Wavelet Denoising Block)
-            self.decoders_stripe.append(WaveletDenoiseBlock(chan))
-
-        downsample_factor = 2 ** len(self.encoders)
-        self.padder_size = downsample_factor * mamba_window_size
-
-    # Helper function to run a decoder path
-    def run_decoder(self, decoders, upsamplers, x, skips):
-        for decoder, up, skip in zip(decoders, upsamplers, skips[::-1]):
-            x = up(x)
-            x = x + skip
-            x = decoder(x)
-        return x
-
-    def forward(self, inp):
-        B, C, H, W = inp.shape
-
-        # print(f"before padding: {inp.shape}") # INFO:
-
-        inp = self.check_image_size(inp)
-
-        # print(f"input size: {inp.shape}") # INFO:
-
-        x = self.intro(inp)
-
-        encs = []
-
-        # print(f"after intro: {x.shape}") # INFO:
-
-        for encoder, down in zip(self.encoders, self.downs):
-            x = encoder(x)
-            encs.append(x)
-            x = down(x)
-            # print(f"After downsampling: {x.shape}") # INFO:
-
-        # Replace NAFNet's middle_blks with MambaIRv2's forward_features
-        # We need to prepare the parameters for MambaIRv2's forward_features
-        # This part might need adjustment based on how MambaIRv2's forward_features expects its parameters.
-        # For now, let's assume it needs a dictionary similar to what NAFMamba uses.
-        attn_mask = self.middle_blk_mamba.calculate_mask((x.shape[2], x.shape[3])).to(x.device)
-        mamba_params = {'attn_mask': attn_mask, 'rpi_sa': self.middle_blk_mamba.relative_position_index_SA}
-        x = self.middle_blk_mamba.forward_features(x, mamba_params)
-
-        bottle_out = x
-
-        # print(f"After bottleneck: {x.shape}") # INFO:
-
-        # Detail reconstruction path
-        x_detail = self.run_decoder(self.decoders_detail, self.ups_detail, bottle_out, encs)
-        pred_detail = self.ending(x_detail)
-
-        # Low-frequency noise prediction path
-        x_lf = self.run_decoder(self.decoders_lf, self.ups_lf, bottle_out, encs)
-        pred_lf_noise = self.ending_lf(x_lf)
-
-        # Stripe noise prediction path
-        x_stripe = self.run_decoder(self.decoders_stripe, self.ups_stripe, bottle_out, encs)
-        pred_stripe_noise = self.ending_stripe(x_stripe)
-
-        # print(f"before ending: {x_detail.shape}") # INFO:
-        # print(f"Final output shape before return: {pred_detail.shape}") # INFO:
-
-
-        # --- Final Combination ---
-        # Combine the predictions to get the final clean image
-        final_clean_image = pred_detail - pred_lf_noise - pred_stripe_noise
-
-        # Or if you use a global skip connection from input
-        # final_clean_image = inp - pred_lf_noise - pred_stripe_noise
-
-        # For training, you should return all intermediate predictions for the loss function
-        # return final_clean_image, pred_lf_noise, pred_stripe_noise
-
-        # For inference, just return the final image
-        # Note: The global skip connection 'x + inp' might need to be re-evaluated
-        # in this multi-head setup. Let's return the combined prediction directly.
-
-        return final_clean_image[:, :, :H, :W]
-
-    def check_image_size(self, x):
-        _, _, h, w = x.size()
-        mod_pad_h = (self.padder_size - h % self.padder_size) % self.padder_size
-        mod_pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
-        x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h))
-        return x
-
-
-class NAFNetLocal(Local_Base, NAFMamba):
-    def __init__(self, *args, train_size=(1, 3, 256, 256), fast_imp=False, **kwargs):
-        Local_Base.__init__(self)
-        NAFNet.__init__(self, *args, **kwargs)
-
-        N, C, H, W = train_size
-        base_size = (int(H * 1.5), int(W * 1.5))
-
-        self.eval()
-        with torch.no_grad():
-            self.convert(base_size=base_size, train_size=train_size, fast_imp=fast_imp)
-
-
 if __name__ == '__main__':
-    img_channel = 3
-    width = 32
+    upscale = 4
+    model = MambaNaf(
+        upscale=2,
+        img_size=64,
+        embed_dim=48,
+        d_state=8,
+        depths=[5, 5, 5, 5],
+        num_heads=[4, 4, 4, 4],
+        window_size=16,
+        inner_rank=32,
+        num_tokens=64,
+        convffn_kernel_size=5,
+        img_range=1.,
+        mlp_ratio=1.,
+        upsampler='pixelshuffledirect').cuda()
 
-    # enc_blks = [2, 2, 4, 8]
-    # middle_blk_num = 12
-    # dec_blks = [2, 2, 2, 2]
+    # Model Size
+    total = sum([param.nelement() for param in model.parameters()])
+    print("Number of parameter: %.3fM" % (total / 1e6))
+    trainable_num = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(trainable_num)
 
-    enc_blks = [1, 1, 1, 28]
-    middle_blk_num = [1] # This will be used to configure the depth of MambaIRv2's middle block
-    dec_blks = [1, 1, 1, 1]
-    
-    # Instantiate NAFNet with the modified middle block configuration
-    net = NAFMamba(img_channel=img_channel, width=width, middle_blk_num=middle_blk_num,
-                      enc_blk_nums=enc_blks, dec_blk_nums=dec_blks)
+    # Test
+    _input = torch.randn([2, 3, 64, 64]).cuda()
+    output = model(_input).cuda()
+    print(output.shape)
 
-
-    inp_shape = (3, 256, 256)
-
-    from ptflops import get_model_complexity_info
-
-    macs, params = get_model_complexity_info(net, inp_shape, verbose=False, print_per_layer_stat=False)
-
-    params = float(params[:-3])
-    macs = float(macs[:-4])
-
-    print(f"MACs: {macs} G")
-    print(f"Params: {params} M")
