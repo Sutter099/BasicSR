@@ -25,6 +25,8 @@ from einops import rearrange, repeat
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
 from pytorch_wavelets import DWTForward, DWTInverse
 
+from basicsr.archs.mpma import *
+
 '''
 mambair v2
 '''
@@ -1186,25 +1188,9 @@ class NAFMamba(nn.Module):
             )
             chan = chan * 2
 
-        # Initialize MambaIRv2's forward_features as the middle block
-        # We need to instantiate MambaIRv2 and extract its forward_features method.
-        # For simplicity, let's assume MambaIRv2 can be configured to match the channel dimension.
-        # You might need to adjust parameters like img_size, patch_size, depths, etc. based on your needs.
-        # Here, we'll create a placeholder MambaIRv2 instance and use its forward_features.
-        # NOTE: This is a simplified approach. In a real scenario, you'd likely want to
-        #       pass specific MambaIRv2 configurations or integrate it more deeply.
-        mamba_window_size = 8
-        self.middle_blk_mamba = MambaModule(
-            img_size=256,  # Example size, adjust as needed
-            embed_dim=chan, # Match the channel dimension from the encoder
-            depths=middle_blk_num, # Use the provided middle_blk_num for depth
-            # Add other necessary MambaIRv2 parameters here
-            # For example: d_state, num_heads, window_size, etc.
-            d_state=8, num_heads=[4, 4, 4, 4], window_size=mamba_window_size, inner_rank=32, num_tokens=64,
-            convffn_kernel_size=5, mlp_ratio=2., qkv_bias=True, upsampler='',
-            # Assuming no upsampling within the middle block
-        )
-        # We will call self.middle_blk_mamba.forward_features in the forward pass.
+        self.middle_blks = None
+        self.middle_in_channels = chan
+        self.middle_blk_num = middle_blk_num
 
         # Build the three parallel decoders
         for num in dec_blk_nums:
@@ -1229,8 +1215,7 @@ class NAFMamba(nn.Module):
             # Stripe Decoder Branch (using Wavelet Denoising Block)
             self.decoders_stripe.append(WaveletDenoiseBlock(chan))
 
-        downsample_factor = 2 ** len(self.encoders)
-        self.padder_size = downsample_factor * mamba_window_size
+        self.padder_size = 2 ** len(self.encoders)
 
     # Helper function to run a decoder path
     def run_decoder(self, decoders, upsamplers, x, skips):
@@ -1261,13 +1246,18 @@ class NAFMamba(nn.Module):
             x = down(x)
             # print(f"After downsampling: {x.shape}") # INFO:
 
-        # Replace NAFNet's middle_blks with MambaIRv2's forward_features
-        # We need to prepare the parameters for MambaIRv2's forward_features
-        # This part might need adjustment based on how MambaIRv2's forward_features expects its parameters.
-        # For now, let's assume it needs a dictionary similar to what NAFMamba uses.
-        attn_mask = self.middle_blk_mamba.calculate_mask((x.shape[2], x.shape[3])).to(x.device)
-        mamba_params = {'attn_mask': attn_mask, 'rpi_sa': self.middle_blk_mamba.relative_position_index_SA}
-        x = self.middle_blk_mamba.forward_features(x, mamba_params)
+        # --- Lazy Initialization of the Bottleneck ---
+        if self.middle_blks is None:
+            b, c, h, w = x.shape
+            self.middle_blks = nn.ModuleList()
+            for num in self.middle_blk_num:
+                self.middle_blks.append(
+                    nn.Sequential(*[MPMABlock(in_channels=self.middle_in_channels, image_size=h) for _ in range(num)])
+                )
+            self.middle_blks = self.middle_blks.to(x.device) # Move to the correct device
+
+        for blk in self.middle_blks:
+            x = blk(x)
 
         bottle_out = x
 
