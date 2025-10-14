@@ -1126,6 +1126,7 @@ class NAFMamba_LKLGL(nn.Module):
 
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
+        self.middle_blks = nn.ModuleList()
         self.ups = nn.ModuleList()
         self.downs = nn.ModuleList()
 
@@ -1153,14 +1154,10 @@ class NAFMamba_LKLGL(nn.Module):
             for _ in range(lglg_blk_num)])
         # =====================================================================
 
-        mamba_window_size = 8
-        self.middle_blk_mamba = MambaModule(
-            img_size=256,
-            embed_dim=chan, 
-            depths=[middle_blk_num], 
-            d_state=8, num_heads=[4, 4, 4, 4], window_size=mamba_window_size, inner_rank=32, num_tokens=64,
-            convffn_kernel_size=5, mlp_ratio=2., qkv_bias=True, upsampler='',
-        )
+        self.middle_blks = \
+            nn.Sequential(
+                *[NAFBlock(chan) for _ in range(middle_blk_num)]
+            )
 
         for num in dec_blk_nums:
             self.ups.append(
@@ -1176,8 +1173,7 @@ class NAFMamba_LKLGL(nn.Module):
                 )
             )
 
-        downsample_factor = 2 ** len(self.encoders)
-        self.padder_size = downsample_factor * mamba_window_size
+        self.padder_size = 2 ** len(self.encoders)
 
     def forward(self, inp):
         B, C, H, W = inp.shape
@@ -1199,9 +1195,7 @@ class NAFMamba_LKLGL(nn.Module):
             x = blk(x)
         # =====================================================================
 
-        attn_mask = self.middle_blk_mamba.calculate_mask((x.shape[2], x.shape[3])).to(x.device)
-        mamba_params = {'attn_mask': attn_mask, 'rpi_sa': self.middle_blk_mamba.relative_position_index_SA}
-        x = self.middle_blk_mamba.forward_features(x, mamba_params)
+        x = self.middle_blks(x)
 
         for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
             x = up(x)
