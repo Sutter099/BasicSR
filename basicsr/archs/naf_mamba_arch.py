@@ -241,21 +241,7 @@ class NAFMamba(nn.Module):
         x_detail = self.run_decoder(self.decoders_detail, self.ups_detail, bottle_out, encs)
         pred_detail = self.ending(x_detail)
 
-        # Low-frequency noise prediction path
-        x_lf = self.run_decoder(self.decoders_lf, self.ups_lf, bottle_out, encs)
-        pred_lf_noise = self.ending_lf(x_lf)
-
-        # Stripe noise prediction path
-        x_stripe = self.run_decoder(self.decoders_stripe, self.ups_stripe, bottle_out, encs)
-        pred_stripe_noise = self.ending_stripe(x_stripe)
-
-        # print(f"before ending: {x_detail.shape}") # INFO:
-        # print(f"Final output shape before return: {pred_detail.shape}") # INFO:
-
-
-        # --- Final Combination ---
-        # Combine the predictions to get the final clean image
-        final_clean_image = pred_detail - pred_lf_noise - pred_stripe_noise
+        final_clean_image = inp + pred_detail
 
         # Or if you use a global skip connection from input
         # final_clean_image = inp - pred_lf_noise - pred_stripe_noise
