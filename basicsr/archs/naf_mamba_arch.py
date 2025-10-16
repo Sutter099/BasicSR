@@ -1134,25 +1134,13 @@ class NAFMamba_LKLGL(nn.Module):
         for num in enc_blk_nums:
             self.encoders.append(
                 nn.Sequential(
-                    *[NAFBlock(chan) for _ in range(num)]
+                    *[LGLBlock(dim=chan, num_heads=8, sr_ratio=2) for _ in range(num)]
                 )
             )
             self.downs.append(
                 nn.Conv2d(chan, 2*chan, 2, 2)
             )
             chan = chan * 2
-
-        # =====================================================================
-        # === 2. 在 __init__ 中实例化 LKLGL 模块 ===
-        # =====================================================================
-        self.lklgl_blocks = nn.ModuleList([
-            LGLBlock(
-                dim=chan,          # dim 必须与当前通道数 chan 匹配
-                num_heads=8,       # 注意力头数，可调整
-                sr_ratio=2         # sr_ratio > 1 来启用空间缩减，提高效率
-            )
-            for _ in range(lglg_blk_num)])
-        # =====================================================================
 
         self.middle_blks = \
             nn.Sequential(
@@ -1187,13 +1175,6 @@ class NAFMamba_LKLGL(nn.Module):
             x = encoder(x)
             encs.append(x)
             x = down(x)
-
-        # =====================================================================
-        # === 3. 在 forward 中调用 LKLGL 模块 ===
-        # =====================================================================
-        for blk in self.lklgl_blocks:
-            x = blk(x)
-        # =====================================================================
 
         x = self.middle_blks(x)
 
