@@ -1154,10 +1154,10 @@ class NAFMamba_LKLGL(nn.Module):
             for _ in range(lglg_blk_num)])
         # =====================================================================
 
-        self.middle_blks = \
-            nn.Sequential(
-                *[NAFBlock(chan) for _ in range(middle_blk_num)]
-            )
+        # self.middle_blks = \
+        #     nn.Sequential(
+        #         *[NAFBlock(chan) for _ in range(middle_blk_num)]
+        #     )
 
         for num in dec_blk_nums:
             self.ups.append(
@@ -1195,7 +1195,7 @@ class NAFMamba_LKLGL(nn.Module):
             x = blk(x)
         # =====================================================================
 
-        x = self.middle_blks(x)
+        # x = self.middle_blks(x)
 
         for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
             x = up(x)
