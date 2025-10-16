@@ -149,7 +149,7 @@ class NAFMamba(nn.Module):
         # ========================================================== #
 
         for num in middle_blk_num:
-            self.decoders_detail.append(nn.Sequential(*[NAFBlock(chan) for _ in range(num)]))
+            self.middle_blks.append(nn.Sequential(*[NAFBlock(chan) for _ in range(num)]))
 
         # Build the parallel decoders (this part remains unchanged)
         for num in dec_blk_nums:
