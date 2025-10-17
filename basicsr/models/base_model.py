@@ -129,6 +129,36 @@ class BaseModel():
         elif scheduler_type == 'CosineAnnealingRestartLR':
             for optimizer in self.optimizers:
                 self.schedulers.append(lr_scheduler.CosineAnnealingRestartLR(optimizer, **train_opt['scheduler']))
+        elif scheduler_type == 'CosineAnnealingWarmupRestarts':
+            for optimizer in self.optimizers:
+                self.schedulers.append(
+                    lr_scheduler.CosineAnnealingWarmupRestarts(
+                        optimizer, **train_opt['scheduler']))
+        # elif scheduler_type == 'CosineAnnealingRestartCyclicLR':
+        #     for optimizer in self.optimizers:
+        #         self.schedulers.append(
+        #             lr_scheduler.CosineAnnealingRestartCyclicLR(
+        #                 optimizer, **train_opt['scheduler']))
+        elif scheduler_type == 'TrueCosineAnnealingLR':
+            print('..', 'cosineannealingLR')
+            for optimizer in self.optimizers:
+                self.schedulers.append(
+                    torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, **train_opt['scheduler']))
+        elif scheduler_type == 'CosineAnnealingLRWithRestart':
+            print('..', 'CosineAnnealingLR_With_Restart')
+            for optimizer in self.optimizers:
+                self.schedulers.append(
+                    lr_scheduler.CosineAnnealingLRWithRestart(optimizer, **train_opt['scheduler']))
+        elif scheduler_type == 'LinearLR':
+            for optimizer in self.optimizers:
+                self.schedulers.append(
+                    lr_scheduler.LinearLR(
+                        optimizer, train_opt['total_iter']))
+        elif scheduler_type == 'VibrateLR':
+            for optimizer in self.optimizers:
+                self.schedulers.append(
+                    lr_scheduler.VibrateLR(
+                        optimizer, train_opt['total_iter']))
         else:
             raise NotImplementedError(f'Scheduler {scheduler_type} is not implemented yet.')
 

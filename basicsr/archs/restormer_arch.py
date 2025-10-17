@@ -10,6 +10,7 @@ from pdb import set_trace as stx
 import numbers
 
 from einops import rearrange
+from basicsr.utils.registry import ARCH_REGISTRY
 
 
 
@@ -190,6 +191,7 @@ class Upsample(nn.Module):
 
 ##########################################################################
 ##---------- Restormer -----------------------
+@ARCH_REGISTRY.register()
 class Restormer(nn.Module):
     def __init__(self, 
         inp_channels=3, 

@@ -1,37 +1,37 @@
 # general settings
 name: GaussianColorDenoising_RestormerSigma15
-model_type: ImageCleanModel
+model_type: ImageRestorationModel
 scale: 1
 num_gpu: 8  # set num_gpu: 0 for cpu mode
-manual_seed: 100
+manual_seed: 10
 
 # dataset and data loader settings
 datasets:
   train:
     name: TrainSet
-    type: Dataset_GaussianDenoising
-    sigma_type: constant
-    sigma_range: 15
-    in_ch: 3    ## RGB image
-    dataroot_gt: ./Denoising/Datasets/train/DFWB
-    dataroot_lq: none
-    geometric_augs: true
+    type: PairedImageDataset
+    dataroot_gt: datasets/ascnet_data/train/gt_train.lmdb
+    dataroot_lq: datasets/ascnet_data/train/lq_train.lmdb
 
     filename_tmpl: '{}'
     io_backend:
-      type: disk
+      type: lmdb
 
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 8
-    batch_size_per_gpu: 8
+    batch_size_per_gpu: 4
 
-    ### -------------Progressive training--------------------------
-    mini_batch_sizes: [8,5,4,2,1,1]             # Batch size per gpu   
-    iters: [92000,64000,48000,36000,36000,24000]
-    gt_size: 384   # Max patch size for progressive training
-    gt_sizes: [128,160,192,256,320,384]  # Patch sizes for progressive training.
-    ### ------------------------------------------------------------
+    gt_size: 256
+    use_hflip: false
+    use_rot: false
+
+    #### -------------Progressive training--------------------------
+    #mini_batch_sizes: [8,5,4,2,1,1]             # Batch size per gpu
+    #iters: [92000,64000,48000,36000,36000,24000]
+    #gt_size: 384   # Max patch size for progressive training
+    #gt_sizes: [128,160,192,256,320,384]  # Patch sizes for progressive training.
+    #### ------------------------------------------------------------
 
     ### ------- Training on single fixed-patch size 128x128---------
     # mini_batch_sizes: [8]   
@@ -40,18 +40,20 @@ datasets:
     # gt_sizes: [128]
     ### ------------------------------------------------------------
 
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 8
+    batch_size_per_gpu: 4
     dataset_enlarge_ratio: 1
     prefetch_mode: ~
 
   val:
     name: ValSet
-    type: Dataset_GaussianDenoising
-    sigma_test: 15
-    in_ch: 3  ## RGB image
-    dataroot_gt: ./Denoising/Datasets/test/CBSD68
-    dataroot_lq: none
+    type: PairedImageDataset
+    dataroot_gt: datasets/ascnet_data/val/gt_val.lmdb
+    dataroot_lq: datasets/ascnet_data/val/lq_val.lmdb
     io_backend:
-      type: disk
+      type: lmdb
 
 # network structures
 network_g:
@@ -76,7 +78,7 @@ path:
 
 # training settings
 train:
-  total_iter: 300000
+  total_iter: 20000
   warmup_iter: -1 # no warm up
   use_grad_clip: true
 
@@ -84,10 +86,10 @@ train:
   # 1st cycle: fixed 3e-4 LR for 92k iters. 
   # 2nd cycle: cosine annealing (3e-4 to 1e-6) for 208k iters.
   scheduler:
-    type: CosineAnnealingRestartCyclicLR
-    periods: [92000, 208000]       
+    type: CosineAnnealingRestartLR
+    periods: [7000, 15000]
     restart_weights: [1,1]
-    eta_mins: [0.0003,0.000001]   
+    # eta_mins: [0.0003,0.000001]
   
   mixing_augs:
     mixup: true
@@ -102,14 +104,14 @@ train:
   
   # losses
   pixel_opt:
-    type: L1Loss
+    type: PSNRLoss
     loss_weight: 1
     reduction: mean
 
 # validation settings
 val:
   window_size: 8
-  val_freq: !!float 4e3
+  val_freq: !!float 2e4
   save_img: false
   rgb2bgr: true
   use_image: false
@@ -120,10 +122,14 @@ val:
       type: calculate_psnr
       crop_border: 0
       test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
 
 # logging settings
 logger:
-  print_freq: 1000
+  print_freq: 200
   save_checkpoint_freq: !!float 4e3
   use_tb_logger: true
   wandb:
