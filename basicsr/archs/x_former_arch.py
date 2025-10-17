@@ -8,6 +8,7 @@ import numbers
 from einops import rearrange
 
 from timm.models.layers import to_2tuple, trunc_normal_
+from basicsr.utils.registry import ARCH_REGISTRY
 
 
 
@@ -404,6 +405,7 @@ class Upsample(nn.Module):
 
 
 
+@ARCH_REGISTRY.register()
 class Xformer(nn.Module):
     def __init__(self, 
         inp_channels=3, 
@@ -607,57 +609,57 @@ class Xformer(nn.Module):
 
         return res
 
-if __name__ == '__main__':
-    # a = torch.randn((1, 3, 256, 256))
-    # net = Xformer()
-    # out = net(a)
-    # print(out.shape)
-
-    # Test for spatial transformer block
-    # dim = 48
-    # num_heads = 4
-    # window_size = 8
-    # shift_size = 4
-    # mlp_ratio = 4.
-    # drop_path = 0.1
-    # act_layer = nn.GELU
-    # norm_layer = LayerNorm
-    #
-    # st = SpatialTransformerBlock(dim=dim, num_heads=num_heads, window_size=window_size, shift_size=shift_size,
-    #                              mlp_ratio=mlp_ratio, drop_path=drop_path, act_layer=act_layer, norm_layer=norm_layer)
-    #
-    # x = torch.randn((1, dim, 64, 64))
-    # out = st(x)
-    # print(out.shape)
-
-    # Test for channel transformer block
-    # dim = 48
-    # num_heads = 4
-    # ffn_expansion_factor = 2.66
-    # bias = False
-    # LayerNorm_type = 'BiasFree'
-    #
-    # ct = ChannelTransformerBlock(dim=dim, num_heads=num_heads, ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type)
-    # x = torch.randn((1, dim, 64, 64))
-    # out = ct(x)
-    # print(out.shape)
-
-    # Test for Xformer
-    a = torch.randn((1, 3, 256, 256))
-    net = Xformer(
-        inp_channels=3,
-        out_channels=3,
-        dim = 48,
-        num_blocks = [2,4,4], 
-        spatial_num_blocks = [2,4,4,6],
-        num_refinement_blocks = 4,
-        heads = [1,2,4,8],
-        window_size=[16,16,16,16],
-        drop_path_rate=0.1,
-        ffn_expansion_factor = 2.66,
-        bias = False,
-        LayerNorm_type = 'BiasFree',   ## Other option 'WithBias'
-        dual_pixel_task = False 
-    )
-    out = net(a)
-    print(out.shape)
+# if __name__ == '__main__':
+#     # a = torch.randn((1, 3, 256, 256))
+#     # net = Xformer()
+#     # out = net(a)
+#     # print(out.shape)
+#
+#     # Test for spatial transformer block
+#     # dim = 48
+#     # num_heads = 4
+#     # window_size = 8
+#     # shift_size = 4
+#     # mlp_ratio = 4.
+#     # drop_path = 0.1
+#     # act_layer = nn.GELU
+#     # norm_layer = LayerNorm
+#     #
+#     # st = SpatialTransformerBlock(dim=dim, num_heads=num_heads, window_size=window_size, shift_size=shift_size,
+#     #                              mlp_ratio=mlp_ratio, drop_path=drop_path, act_layer=act_layer, norm_layer=norm_layer)
+#     #
+#     # x = torch.randn((1, dim, 64, 64))
+#     # out = st(x)
+#     # print(out.shape)
+#
+#     # Test for channel transformer block
+#     # dim = 48
+#     # num_heads = 4
+#     # ffn_expansion_factor = 2.66
+#     # bias = False
+#     # LayerNorm_type = 'BiasFree'
+#     #
+#     # ct = ChannelTransformerBlock(dim=dim, num_heads=num_heads, ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type)
+#     # x = torch.randn((1, dim, 64, 64))
+#     # out = ct(x)
+#     # print(out.shape)
+#
+#     # Test for Xformer
+#     a = torch.randn((1, 3, 256, 256))
+#     net = Xformer(
+#         inp_channels=3,
+#         out_channels=3,
+#         dim = 48,
+#         num_blocks = [2,4,4], 
+#         spatial_num_blocks = [2,4,4,6],
+#         num_refinement_blocks = 4,
+#         heads = [1,2,4,8],
+#         window_size=[16,16,16,16],
+#         drop_path_rate=0.1,
+#         ffn_expansion_factor = 2.66,
+#         bias = False,
+#         LayerNorm_type = 'BiasFree',   ## Other option 'WithBias'
+#         dual_pixel_task = False 
+#     )
+#     out = net(a)
+#     print(out.shape)
