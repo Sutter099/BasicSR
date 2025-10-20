@@ -84,11 +84,25 @@ class NAFBlock(nn.Module):
 @ARCH_REGISTRY.register()
 class NAFNet(nn.Module):
 
-    def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[]):
+    def __init__(self, img_channel=3, width=16, middle_blk_num=1, enc_blk_nums=[], dec_blk_nums=[],
+                 grad_channel=0):
         super().__init__()
+
+        self.img_channel = img_channel
+        self.grad_channel = grad_channel
 
         self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1,
                               bias=True)
+
+        if self.grad_channel > 0:
+            self.grad_fusion_conv = nn.Conv2d(in_channels=width + grad_channel,
+                                              out_channels=width,
+                                              kernel_size=1,
+                                              padding=0,
+                                              stride=1,
+                                              groups=1,
+                                              bias=True)
+
         self.ending = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1,
                               bias=True)
 
@@ -135,7 +149,20 @@ class NAFNet(nn.Module):
         B, C, H, W = inp.shape
         inp = self.check_image_size(inp)
 
-        x = self.intro(inp)
+        if self.grad_channel > 0:
+            # suppose inp channels are [img_channel, grad_channel]
+            img_inp = inp[:, :self.img_channel, :, :]
+            grad_inp = inp[:, self.img_channel:, :, :]
+        else:
+            img_inp = inp
+
+        # shallow feature extract
+        x = self.intro(img_inp)
+
+        # fusion
+        if self.grad_channel > 0 and hasattr(self, 'grad_fusion_conv'):
+            x_fused = torch.cat([x, grad_inp], dim=1) # Shape: [B, width + grad_channel, H, W]
+            x = self.grad_fusion_conv(x_fused)        # Shape: [B, width, H, W]
 
         encs = []
 
@@ -152,7 +179,7 @@ class NAFNet(nn.Module):
             x = decoder(x)
 
         x = self.ending(x)
-        x = x + inp
+        x = x + img_inp
 
         return x[:, :, :H, :W]
 

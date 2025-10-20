@@ -15,7 +15,7 @@ manual_seed: 10
 datasets:
   train:
     name: SIDD
-    type: PairedImageDataset
+    type: PairedImageLQGradDataset
     dataroot_gt: datasets/ascnet_data/train/gt_train.lmdb
     dataroot_lq: datasets/ascnet_data/train/lq_train.lmdb
 
@@ -36,7 +36,7 @@ datasets:
 
   val:
     name: SIDD_val
-    type: PairedImageDataset
+    type: PairedImageLQGradDataset
     dataroot_gt: datasets/ascnet_data/val/gt_val.lmdb
     dataroot_lq: datasets/ascnet_data/val/lq_val.lmdb
     io_backend:
@@ -46,6 +46,7 @@ datasets:
 network_g:
   type: NAFNet
   width: 64
+  grad_channel: 1
   enc_blk_nums: [2, 2, 4, 8]
   middle_blk_num: 12
   dec_blk_nums: [2, 2, 2, 2]
