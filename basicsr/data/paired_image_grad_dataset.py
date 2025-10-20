@@ -1,5 +1,9 @@
+import torch
 from torch.utils import data as data
 from torchvision.transforms.functional import normalize
+
+import numpy as np
+import cv2
 
 from basicsr.data.data_util import paired_paths_from_folder, paired_paths_from_lmdb, paired_paths_from_meta_info_file
 from basicsr.data.transforms import augment, paired_random_crop
@@ -8,7 +12,7 @@ from basicsr.utils.registry import DATASET_REGISTRY
 
 
 @DATASET_REGISTRY.register()
-class PairedImageDataset(data.Dataset):
+class PairedImageLQGradDataset(data.Dataset):
     """Paired image dataset for image restoration.
 
     Read LQ (Low Quality, e.g. LR (Low Resolution), blurry, noisy, etc) and GT image pairs.
@@ -36,7 +40,7 @@ class PairedImageDataset(data.Dataset):
     """
 
     def __init__(self, opt):
-        super(PairedImageDataset, self).__init__()
+        super(PairedImageLQGradDataset, self).__init__()
         self.opt = opt
         # file client (io backend)
         self.file_client = None
@@ -88,19 +92,48 @@ class PairedImageDataset(data.Dataset):
             img_gt = bgr2ycbcr(img_gt, y_only=True)[..., None]
             img_lq = bgr2ycbcr(img_lq, y_only=True)[..., None]
 
-        # crop the unmatched GT images during validation or testing, especially for SR benchmark datasets
-        # TODO: It is better to update the datasets, rather than force to crop
+        # 1. trans [0, 1] float32 image to [0, 255] uint8 for cv2
+        img_lq_uint8 = (img_lq * 255.0).astype(np.uint8)
+
+        # 2. get gray scale pic
+        if img_lq_uint8.ndim == 3 and img_lq_uint8.shape[2] == 3:
+            # if BGR
+            img_lq_gray = cv2.cvtColor(img_lq_uint8, cv2.COLOR_BGR2GRAY)
+        else:
+            # if Y-channel (H, W, 1)
+            img_lq_gray = np.squeeze(img_lq_uint8, axis=2)
+
+        # 3. compute Sobel grad
+        grad_x = cv2.Sobel(img_lq_gray, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(img_lq_gray, cv2.CV_64F, 0, 1, ksize=3)
+
+        # 4. to [0, 255] uint8
+        grad_map_uint8 = cv2.convertScaleAbs(cv2.magnitude(grad_x, grad_y))
+
+        # 5. back to [0, 1] float32 and add channel (H, W) -> (H, W, 1)
+        grad_map = (grad_map_uint8.astype(np.float32) / 255.)
+        grad_map = np.expand_dims(grad_map, axis=2)
+
+        # crop the unmatched GT images during validation or testing
         if self.opt['phase'] != 'train':
             img_gt = img_gt[0:img_lq.shape[0] * scale, 0:img_lq.shape[1] * scale, :]
+            grad_map = grad_map[0:img_lq.shape[0], 0:img_lq.shape[1], :]
 
         # BGR to RGB, HWC to CHW, numpy to tensor
         img_gt, img_lq = img2tensor([img_gt, img_lq], bgr2rgb=True, float32=True)
+
+        # (HWC -> CHW)
+        grad_map_tensor = img2tensor([grad_map], bgr2rgb=False, float32=True)[0]
+
         # normalize
         if self.mean is not None or self.std is not None:
             normalize(img_lq, self.mean, self.std, inplace=True)
             normalize(img_gt, self.mean, self.std, inplace=True)
+            # grad map already in [0, 1]
 
-        return {'lq': img_lq, 'gt': img_gt, 'lq_path': lq_path, 'gt_path': gt_path}
+        lq_combined_tensor = torch.cat([img_lq, grad_map_tensor], dim=0)
+
+        return {'lq': lq_combined_tensor, 'gt': img_gt, 'lq_path': lq_path, 'gt_path': gt_path}
 
     def __len__(self):
         return len(self.paths)
