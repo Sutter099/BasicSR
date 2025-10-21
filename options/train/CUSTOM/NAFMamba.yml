@@ -16,12 +16,12 @@ datasets:
   train:
     name: SIDD
     type: PairedImageDataset
-    dataroot_gt: datasets/ascnet_data/train/gt_train.lmdb
-    dataroot_lq: datasets/ascnet_data/train/lq_train.lmdb
+    dataroot_gt: datasets/hm_tir/train/gt
+    dataroot_lq: datasets/hm_tir/train/noise
 
     filename_tmpl: '{}'
     io_backend:
-      type: lmdb
+      type: disk
 
     gt_size: 256
     use_hflip: false
@@ -37,10 +37,10 @@ datasets:
   val:
     name: SIDD_val
     type: PairedImageDataset
-    dataroot_gt: datasets/ascnet_data/val/gt_val.lmdb
-    dataroot_lq: datasets/ascnet_data/val/lq_val.lmdb
+    dataroot_gt: datasets/hm_tir/val/gt
+    dataroot_lq: datasets/hm_tir/val/noise
     io_backend:
-      type: lmdb
+      type: disk
 
 
 network_g:

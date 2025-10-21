@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from basicsr.archs.arch_util import LayerNorm2d, to_2tuple, trunc_normal_
+from basicsr.archs.csafm import CSAFM
 from basicsr.archs.local_arch import Local_Base
 from basicsr.utils.registry import ARCH_REGISTRY
 from einops import rearrange, repeat
@@ -134,10 +135,9 @@ class NAFMamba(nn.Module):
         chan = width
         current_size = image_size
         for num in enc_blk_nums:
-            # Replace NAFBlock with MPMABlock for the encoder
             self.encoders.append(
                 nn.Sequential(
-                    *[MPMABlock(in_channels=chan, image_size=current_size) for _ in range(num)]
+                    *[NAFBlock(chan) for _ in range(num)]
                 )
             )
             self.downs.append(
@@ -149,7 +149,7 @@ class NAFMamba(nn.Module):
         # ========================================================== #
 
         for num in middle_blk_num:
-            self.middle_blks.append(nn.Sequential(*[NAFBlock(chan) for _ in range(num)]))
+            self.middle_blks.append(nn.Sequential(*[CSAFM(dim=chan) for _ in range(num)]))
 
         # Build the parallel decoders (this part remains unchanged)
         for num in dec_blk_nums:
