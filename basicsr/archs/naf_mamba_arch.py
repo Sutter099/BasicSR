@@ -109,9 +109,16 @@ class WaveletDenoiseBlock(nn.Module):
 @ARCH_REGISTRY.register()
 class NAFMamba(nn.Module):
 
-    def __init__(self, img_channel=3, width=16, middle_blk_num=[], enc_blk_nums=[], dec_blk_nums=[], image_size=256):
+    def __init__(self, img_channel=3, width=16, pre_mamba_num=3, middle_blk_num=[], enc_blk_nums=[], dec_blk_nums=[], image_size=256):
         super().__init__()
 
+        self.pre_mamba = nn.Sequential(
+            nn.Conv2d(in_channels=img_channel, out_channels=16, kernel_size=3, padding=1, stride=1,
+                               groups=1, bias=True),
+            *[MPMABlock(in_channels=16, image_size=image_size) for _ in range(pre_mamba_num)],
+            nn.Conv2d(in_channels=16, out_channels=img_channel, kernel_size=3, padding=1, stride=1,
+                               groups=1, bias=True)
+        )
         self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1,
                                groups=1, bias=True)
         self.ending = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1,
@@ -123,21 +130,16 @@ class NAFMamba(nn.Module):
         self.decoders_detail = nn.ModuleList()
         self.ups_detail = nn.ModuleList()
 
-        # ... (other decoder initializations remain the same) ...
-
         self.downs = nn.ModuleList()
         self.middle_blks = nn.ModuleList()
 
-        # ========================================================== #
-        # ============== MODIFICATION IS HERE ====================== #
-        # ========================================================== #
         chan = width
         current_size = image_size
         for num in enc_blk_nums:
             # Replace NAFBlock with MPMABlock for the encoder
             self.encoders.append(
                 nn.Sequential(
-                    *[MPMABlock(in_channels=chan, image_size=current_size) for _ in range(num)]
+                    *[NAFBlock(chan) for _ in range(num)]
                 )
             )
             self.downs.append(
@@ -145,8 +147,6 @@ class NAFMamba(nn.Module):
             )
             chan = chan * 2
             current_size //= 2  # Update size for the next encoder level
-        # ========================================================== #
-        # ========================================================== #
 
         for num in middle_blk_num:
             self.middle_blks.append(nn.Sequential(*[NAFBlock(chan) for _ in range(num)]))
@@ -179,6 +179,7 @@ class NAFMamba(nn.Module):
     def forward(self, inp):
         B, C, H, W = inp.shape
         inp = self.check_image_size(inp)
+        inp = self.pre_mamba(inp)
         x = self.intro(inp)
         encs = []
 
