@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from basicsr.archs.arch_util import LayerNorm2d, to_2tuple, trunc_normal_
+from basicsr.archs.eblock import EBlock
 from basicsr.archs.local_arch import Local_Base
 from basicsr.utils.registry import ARCH_REGISTRY
 from einops import rearrange, repeat
@@ -132,7 +133,7 @@ class NAFMamba(nn.Module):
             # Replace NAFBlock with MPMABlock for the encoder
             self.encoders.append(
                 nn.Sequential(
-                    *[NAFBlock(chan) for _ in range(num)]
+                    *[EBlock(chan) for _ in range(num)]
                 )
             )
             self.downs.append(
