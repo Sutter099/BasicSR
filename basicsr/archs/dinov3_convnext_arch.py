@@ -139,7 +139,7 @@ class ConvNeXt(nn.Module):
         drop_path_rate: float = 0.0,
         layer_scale_init_value: float = 1e-6,
         # DINO arguments
-        patch_size: int | None = None,
+        patch_size: Optional[int] = None,
         **ignored_kwargs,
     ):
         super().__init__()
@@ -204,7 +204,7 @@ class ConvNeXt(nn.Module):
             torch.nn.init.trunc_normal_(module.weight, std=0.02)
             nn.init.constant_(module.bias, 0)
 
-    def forward_features(self, x: Tensor | List[Tensor], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
+    def forward_features(self, x: Union[Tensor, List[Tensor]], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
         if isinstance(x, torch.Tensor):
             return self.forward_features_list([x], [masks])[0]
         else:
@@ -338,3 +338,31 @@ def get_convnext_arch(arch_name):
         ConvNeXt,
         **size_dict,
     )
+
+# if __name__ == "__main__":
+#     # Example usage
+#     # Create a ConvNeXt-tiny model
+#     convnext_tiny = get_convnext_arch("convnext_tiny")()
+#     print(convnext_tiny)
+#
+#     # Create a dummy input tensor (batch_size, channels, height, width)
+#     dummy_input = torch.randn(1, 3, 224, 224)
+#
+#     # Forward pass
+#     output = convnext_tiny(dummy_input)
+#     print("Output shape:", output.shape)
+#
+#     # Example of getting intermediate layers
+#     intermediate_layers = convnext_tiny.get_intermediate_layers(dummy_input, n=2, return_class_token=True)
+#     print(f"Number of intermediate layer outputs: {len(intermediate_layers)}")
+#     for i, (patches, cls_token) in enumerate(intermediate_layers):
+#         print(f"Layer {i+1}: Patches shape: {patches.shape}, Class token shape: {cls_token.shape}")
+#
+#     # Example with patch_size
+#     convnext_tiny_patch_resize = get_convnext_arch("convnext_tiny")(patch_size=16)
+#     print("\nConvNeXt-tiny with patch_size=16:")
+#     print(convnext_tiny_patch_resize)
+#     intermediate_layers_resized = convnext_tiny_patch_resize.get_intermediate_layers(dummy_input, n=2, return_class_token=True)
+#     print(f"Number of intermediate layer outputs (resized): {len(intermediate_layers_resized)}")
+#     for i, (patches, cls_token) in enumerate(intermediate_layers_resized):
+#         print(f"Layer {i+1}: Patches shape: {patches.shape}, Class token shape: {cls_token.shape}")
