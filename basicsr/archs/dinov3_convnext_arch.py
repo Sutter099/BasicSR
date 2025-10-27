@@ -14,6 +14,7 @@ import torch.nn.init
 from torch import Tensor, nn
 
 from basicsr.utils.registry import ARCH_REGISTRY
+from basicsr.archs.NAFNet_arch import NAFBlock
 
 logger = logging.getLogger("dinov3_denoiser")
 
@@ -256,67 +257,56 @@ convnext_sizes = {
 }
 
 class UNetDecoder(nn.Module):
-    def __init__(self, encoder_dims: List[int], output_chans: int = 3, intermediate_dims: List[int] = [384, 192, 96]):
+    def __init__(self, encoder_dims: List[int], output_chans: int = 3):
         super().__init__()
         # encoder_dims = [96, 192, 384, 768] for tiny
 
         # --- Upsampling Blocks ---
         # Start from the deepest feature
-        self.upconv3 = nn.ConvTranspose2d(encoder_dims[3], intermediate_dims[0], kernel_size=2, stride=2)
-        self.dec_block3 = nn.Sequential( # Takes concat(upconv3_out, features[2])
-            nn.Conv2d(intermediate_dims[0] + encoder_dims[2], intermediate_dims[0], kernel_size=3, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(intermediate_dims[0], intermediate_dims[0], kernel_size=3, padding=1),
-            nn.LeakyReLU(0.2, inplace=True)
+        self.upconv3 = nn.Sequential(
+            nn.Conv2d(encoder_dims[3], encoder_dims[3] * 2, 1, bias=False),
+            nn.PixelShuffle(2)
         )
+        self.dec_block3 = NAFBlock(encoder_dims[3] // 2)
 
-        self.upconv2 = nn.ConvTranspose2d(intermediate_dims[0], intermediate_dims[1], kernel_size=2, stride=2)
-        self.dec_block2 = nn.Sequential( # Takes concat(upconv2_out, features[1])
-            nn.Conv2d(intermediate_dims[1] + encoder_dims[1], intermediate_dims[1], kernel_size=3, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(intermediate_dims[1], intermediate_dims[1], kernel_size=3, padding=1),
-            nn.LeakyReLU(0.2, inplace=True)
+        self.upconv2 = nn.Sequential(
+            nn.Conv2d(encoder_dims[2], encoder_dims[2] * 2, 1, bias=False),
+            nn.PixelShuffle(2)
         )
+        self.dec_block2 = NAFBlock(encoder_dims[2] // 2)
 
-        self.upconv1 = nn.ConvTranspose2d(intermediate_dims[1], intermediate_dims[2], kernel_size=2, stride=2)
-        self.dec_block1 = nn.Sequential( # Takes concat(upconv1_out, features[0])
-            nn.Conv2d(intermediate_dims[2] + encoder_dims[0], intermediate_dims[2], kernel_size=3, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(intermediate_dims[2], intermediate_dims[2], kernel_size=3, padding=1),
-            nn.LeakyReLU(0.2, inplace=True)
+        self.upconv1 = nn.Sequential(
+            nn.Conv2d(encoder_dims[1], encoder_dims[1] * 2, 1, bias=False),
+            nn.PixelShuffle(2)
         )
+        self.dec_block1 = NAFBlock(encoder_dims[1] // 2)
 
         # --- Final Upsampling to original size ---
-        # Input dim is intermediate_dims[2] (e.g., 96), needs to upsample 4x
-        self.final_upconv = nn.ConvTranspose2d(intermediate_dims[2], output_chans, kernel_size=4, stride=4)
-        # Alternatively, use Upsample + Conv
-        # self.final_up = nn.Sequential(
-        #     nn.Upsample(scale_factor=4, mode='bilinear', align_corners=False),
-        #     nn.Conv2d(intermediate_dims[2], intermediate_dims[2], kernel_size=3, padding=1),
-        #     nn.LeakyReLU(0.2, inplace=True),
-        #     nn.Conv2d(intermediate_dims[2], output_chans, kernel_size=1)
-        # )
+        upsample_factor = 4
+        intermediate_channels = output_chans * (upsample_factor ** 2)
+        self.upconv_final = nn.Sequential(
+            nn.Conv2d(
+                in_channels=encoder_dims[0],
+                out_channels=intermediate_channels,
+                kernel_size=1,
+                bias=False
+            ),
+            nn.PixelShuffle(upscale_factor=upsample_factor)
+        )
 
     def forward(self, features: List[Tensor]):
         f1, f2, f3, f4 = features # features[0] to features[3]
 
         d3 = self.upconv3(f4) # Upsample deep feature
-        # Skip connection from encoder stage 3
-        d3_concat = torch.cat([d3, f3], dim=1)
-        d3_out = self.dec_block3(d3_concat)
+        d3_out = self.dec_block3(d3 + f3)
 
         d2 = self.upconv2(d3_out)
-        # Skip connection from encoder stage 2
-        d2_concat = torch.cat([d2, f2], dim=1)
-        d2_out = self.dec_block2(d2_concat)
+        d2_out = self.dec_block2(d2 + f2)
 
         d1 = self.upconv1(d2_out)
-        # Skip connection from encoder stage 1
-        d1_concat = torch.cat([d1, f1], dim=1)
-        d1_out = self.dec_block1(d1_concat)
+        d1_out = self.dec_block1(d1 + f1)
 
-        output = self.final_upconv(d1_out)
-        # output = self.final_up(d1_out) # If using Upsample+Conv
+        output = self.upconv_final(d1_out)
 
         return output
 
