@@ -13,8 +13,9 @@ import torch.nn.functional as F
 import torch.nn.init
 from torch import Tensor, nn
 
+from basicsr.utils.registry import ARCH_REGISTRY
 
-logger = logging.getLogger("dinov3")
+logger = logging.getLogger("dinov3_denoiser")
 
 
 def drop_path(x: Tensor, drop_prob: float = 0.0, training: bool = False) -> Tensor:
@@ -113,6 +114,7 @@ class LayerNorm(nn.Module):
             return x
 
 
+@ARCH_REGISTRY.register()
 class ConvNeXt(nn.Module):
     r"""
     Code adapted from https://github.com/facebookresearch/ConvNeXt/blob/main/models/convnext.pyConvNeXt
