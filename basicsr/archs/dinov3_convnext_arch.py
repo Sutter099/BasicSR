@@ -114,7 +114,6 @@ class LayerNorm(nn.Module):
             return x
 
 
-@ARCH_REGISTRY.register()
 class ConvNeXt(nn.Module):
     r"""
     Code adapted from https://github.com/facebookresearch/ConvNeXt/blob/main/models/convnext.pyConvNeXt
@@ -145,6 +144,7 @@ class ConvNeXt(nn.Module):
         **ignored_kwargs,
     ):
         super().__init__()
+        # TODO: remove?
         if len(ignored_kwargs) > 0:
             logger.warning(f"Ignored kwargs: {ignored_kwargs}")
         del ignored_kwargs
@@ -176,22 +176,10 @@ class ConvNeXt(nn.Module):
             self.stages.append(stage)
             cur += depths[i]
 
-        self.norm = nn.LayerNorm(dims[-1], eps=1e-6)  # final norm layer
+        # self.norm = nn.LayerNorm(dims[-1], eps=1e-6)  # final norm layer
+        self.dims = dims
+        self.patch_size = patch_size # Store patch_size if needed later
         # ==== End of ConvNeXt's original init =====
-
-        # ==== DINO adaptation ====
-        self.head = nn.Identity()  # remove classification head
-        self.embed_dim = dims[-1]
-        self.embed_dims = dims  # per layer dimensions
-        self.n_blocks = len(self.downsample_layers)  # 4
-        self.chunked_blocks = False
-        self.n_storage_tokens = 0  # no registers
-
-        self.norms = nn.ModuleList([nn.Identity() for i in range(3)])
-        self.norms.append(self.norm)
-
-        self.patch_size = patch_size
-        self.input_pad_size = 4  # first convolution with kernel_size = 4, stride = 4
 
     def init_weights(self):
         self.apply(self._init_weights)
@@ -206,7 +194,8 @@ class ConvNeXt(nn.Module):
             torch.nn.init.trunc_normal_(module.weight, std=0.02)
             nn.init.constant_(module.bias, 0)
 
-    def forward_features(self, x: Union[Tensor, List[Tensor]], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
+    # def forward_features(self, x: Union[Tensor, List[Tensor]], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
+    def forward_features_original_dino_output(self, x: Union[Tensor, List[Tensor]], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
         if isinstance(x, torch.Tensor):
             return self.forward_features_list([x], [masks])[0]
         else:
@@ -236,77 +225,16 @@ class ConvNeXt(nn.Module):
 
         return output
 
-    def forward(self, *args, is_training=False, **kwargs):
-        ret = self.forward_features(*args, **kwargs)
-        if is_training:
-            return ret
-        else:
-            return self.head(ret["x_norm_clstoken"])
-
-    def _get_intermediate_layers(self, x, n=1):
-        h, w = x.shape[-2:]
-        output, total_block_len = [], len(self.downsample_layers)
-        blocks_to_take = range(total_block_len - n, total_block_len) if isinstance(n, int) else n
-        for i in range(total_block_len):
-            x = self.downsample_layers[i](x)
-            x = self.stages[i](x)
-            if i in blocks_to_take:
-                x_pool = x.mean([-2, -1])
-                x_patches = x
-                if self.patch_size is not None:
-                    # Resize output feature maps to that of a ViT with given patch_size
-                    x_patches = nn.functional.interpolate(
-                        x,
-                        size=(h // self.patch_size, w // self.patch_size),
-                        mode="bilinear",
-                        antialias=True,
-                    )
-                output.append(
-                    [
-                        x_pool,  # CLS (B x C)
-                        x_patches,  # B x C x H x W
-                    ]
-                )
-        assert len(output) == len(blocks_to_take), f"only {len(output)} / {len(blocks_to_take)} blocks found"
-        return output
-
-    def get_intermediate_layers(
-        self,
-        x,
-        n: Union[int, Sequence] = 1,  # Layers or n last layers to take,
-        reshape: bool = False,
-        return_class_token: bool = False,
-        norm: bool = True,
-    ):
-        outputs = self._get_intermediate_layers(x, n)
-
-        if norm:
-            nchw_shapes = [out[-1].shape for out in outputs]
-            if isinstance(n, int):
-                norms = self.norms[-n:]
-            else:
-                norms = [self.norms[i] for i in n]
-            outputs = [
-                (
-                    norm(cls_token),  # N x C
-                    norm(patches.flatten(-2, -1).permute(0, 2, 1)),  # N x HW x C
-                )
-                for (cls_token, patches), norm in zip(outputs, norms)
-            ]
-            if reshape:
-                outputs = [
-                    (cls_token, patches.permute(0, 2, 1).reshape(*nchw).contiguous())
-                    for (cls_token, patches), nchw in zip(outputs, nchw_shapes)
-                ]
-        elif not reshape:
-            # force B x N x C format for patch tokens
-            outputs = [(cls_token, patches.flatten(-2, -1).permute(0, 2, 1)) for (cls_token, patches) in outputs]
-        class_tokens = [out[0] for out in outputs]
-        outputs = [out[1] for out in outputs]
-        if return_class_token:
-            return tuple(zip(outputs, class_tokens))
-        return tuple(outputs)
-
+    def forward(self, x):
+        # Forward through stages to get features at different resolutions
+        features = []
+        current_x = x
+        for i in range(4):
+            current_x = self.downsample_layers[i](current_x)
+            current_x = self.stages[i](current_x)
+            features.append(current_x)
+        # Return features from all stages for potential U-Net style skip connections
+        return features
 
 convnext_sizes = {
     "tiny": dict(
@@ -327,6 +255,122 @@ convnext_sizes = {
     ),
 }
 
+class UNetDecoder(nn.Module):
+    def __init__(self, encoder_dims: List[int], output_chans: int = 3, intermediate_dims: List[int] = [384, 192, 96]):
+        super().__init__()
+        # encoder_dims = [96, 192, 384, 768] for tiny
+
+        # --- Upsampling Blocks ---
+        # Start from the deepest feature
+        self.upconv3 = nn.ConvTranspose2d(encoder_dims[3], intermediate_dims[0], kernel_size=2, stride=2)
+        self.dec_block3 = nn.Sequential( # Takes concat(upconv3_out, features[2])
+            nn.Conv2d(intermediate_dims[0] + encoder_dims[2], intermediate_dims[0], kernel_size=3, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(intermediate_dims[0], intermediate_dims[0], kernel_size=3, padding=1),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+
+        self.upconv2 = nn.ConvTranspose2d(intermediate_dims[0], intermediate_dims[1], kernel_size=2, stride=2)
+        self.dec_block2 = nn.Sequential( # Takes concat(upconv2_out, features[1])
+            nn.Conv2d(intermediate_dims[1] + encoder_dims[1], intermediate_dims[1], kernel_size=3, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(intermediate_dims[1], intermediate_dims[1], kernel_size=3, padding=1),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+
+        self.upconv1 = nn.ConvTranspose2d(intermediate_dims[1], intermediate_dims[2], kernel_size=2, stride=2)
+        self.dec_block1 = nn.Sequential( # Takes concat(upconv1_out, features[0])
+            nn.Conv2d(intermediate_dims[2] + encoder_dims[0], intermediate_dims[2], kernel_size=3, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(intermediate_dims[2], intermediate_dims[2], kernel_size=3, padding=1),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+
+        # --- Final Upsampling to original size ---
+        # Input dim is intermediate_dims[2] (e.g., 96), needs to upsample 4x
+        self.final_upconv = nn.ConvTranspose2d(intermediate_dims[2], output_chans, kernel_size=4, stride=4)
+        # Alternatively, use Upsample + Conv
+        # self.final_up = nn.Sequential(
+        #     nn.Upsample(scale_factor=4, mode='bilinear', align_corners=False),
+        #     nn.Conv2d(intermediate_dims[2], intermediate_dims[2], kernel_size=3, padding=1),
+        #     nn.LeakyReLU(0.2, inplace=True),
+        #     nn.Conv2d(intermediate_dims[2], output_chans, kernel_size=1)
+        # )
+
+    def forward(self, features: List[Tensor]):
+        f1, f2, f3, f4 = features # features[0] to features[3]
+
+        d3 = self.upconv3(f4) # Upsample deep feature
+        # Skip connection from encoder stage 3
+        d3_concat = torch.cat([d3, f3], dim=1)
+        d3_out = self.dec_block3(d3_concat)
+
+        d2 = self.upconv2(d3_out)
+        # Skip connection from encoder stage 2
+        d2_concat = torch.cat([d2, f2], dim=1)
+        d2_out = self.dec_block2(d2_concat)
+
+        d1 = self.upconv1(d2_out)
+        # Skip connection from encoder stage 1
+        d1_concat = torch.cat([d1, f1], dim=1)
+        d1_out = self.dec_block1(d1_concat)
+
+        output = self.final_upconv(d1_out)
+        # output = self.final_up(d1_out) # If using Upsample+Conv
+
+        return output
+
+# --- Combined Denoising Model ---
+@ARCH_REGISTRY.register()
+class DINOv3ConvNeXtDenoiser(nn.Module):
+    """
+    Combines DINOv3 ConvNeXt Backbone with a Decoder for Image Denoising.
+    Expects (B, C, H, W) input and outputs (B, C, H, W).
+    """
+    def __init__(
+        self,
+        arch_name: str = 'tiny',
+        in_chans: int = 3,
+        output_chans: int = 3,
+        drop_path_rate: float = 0.0,
+        layer_scale_init_value: float = 1e-6,
+        freeze_backbone: bool = True,
+        **kwargs
+    ):
+        super().__init__()
+
+        try:
+            size_dict = convnext_sizes[arch_name]
+        except KeyError:
+            raise NotImplementedError(f"ConvNeXt size '{arch_name}' not recognized.")
+
+        self.backbone = ConvNeXt(
+            in_chans=in_chans, **size_dict, drop_path_rate=drop_path_rate,
+            layer_scale_init_value=layer_scale_init_value, **kwargs
+        )
+        encoder_dims = size_dict['dims']
+        if freeze_backbone:
+            logger.info("Freezing DINOv3 ConvNeXt backbone weights.")
+            print("freezing")
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+
+        self.decoder = UNetDecoder(encoder_dims=encoder_dims, output_chans=output_chans)
+
+        logger.info(f"Initialized DINOv3ConvNeXtDenoiser with {arch_name} backbone.")
+
+    def forward(self, x):
+        input_h, input_w = x.shape[-2:]
+        features = self.backbone(x)
+        reconstructed_image = x + self.decoder(features)
+
+        output_h, output_w = reconstructed_image.shape[-2:]
+        if output_h != input_h or output_w != input_w:
+             reconstructed_image = F.interpolate(
+                 reconstructed_image, size=(input_h, input_w),
+                 mode='bilinear', align_corners=False
+             )
+        return reconstructed_image
 
 def get_convnext_arch(arch_name):
     size_dict = None
@@ -342,29 +386,18 @@ def get_convnext_arch(arch_name):
     )
 
 # if __name__ == "__main__":
-#     # Example usage
-#     # Create a ConvNeXt-tiny model
-#     convnext_tiny = get_convnext_arch("convnext_tiny")()
-#     print(convnext_tiny)
+#     # Create a DINOv3ConvNeXtDenoiser model (tiny version)
+#     denoiser = DINOv3ConvNeXtDenoiser(arch_name='tiny', in_chans=3, output_chans=3)
+#     print(denoiser)
 #
 #     # Create a dummy input tensor (batch_size, channels, height, width)
-#     dummy_input = torch.randn(1, 3, 224, 224)
+#     dummy_input = torch.randn(2, 3, 256, 256)
 #
 #     # Forward pass
-#     output = convnext_tiny(dummy_input)
-#     print("Output shape:", output.shape)
+#     output = denoiser(dummy_input)
+#     print("Input shape:", dummy_input.shape)
+#     print("Output shape:", output.shape) # Should match input shape
 #
-#     # Example of getting intermediate layers
-#     intermediate_layers = convnext_tiny.get_intermediate_layers(dummy_input, n=2, return_class_token=True)
-#     print(f"Number of intermediate layer outputs: {len(intermediate_layers)}")
-#     for i, (patches, cls_token) in enumerate(intermediate_layers):
-#         print(f"Layer {i+1}: Patches shape: {patches.shape}, Class token shape: {cls_token.shape}")
-#
-#     # Example with patch_size
-#     convnext_tiny_patch_resize = get_convnext_arch("convnext_tiny")(patch_size=16)
-#     print("\nConvNeXt-tiny with patch_size=16:")
-#     print(convnext_tiny_patch_resize)
-#     intermediate_layers_resized = convnext_tiny_patch_resize.get_intermediate_layers(dummy_input, n=2, return_class_token=True)
-#     print(f"Number of intermediate layer outputs (resized): {len(intermediate_layers_resized)}")
-#     for i, (patches, cls_token) in enumerate(intermediate_layers_resized):
-#         print(f"Layer {i+1}: Patches shape: {patches.shape}, Class token shape: {cls_token.shape}")
+#     # Check number of parameters
+#     num_params = sum(p.numel() for p in denoiser.parameters() if p.requires_grad)
+#     print(f"Total trainable parameters: {num_params / 1e6:.2f} M")
