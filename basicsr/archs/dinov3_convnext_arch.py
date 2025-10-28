@@ -11,6 +11,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F # Needed for GELU if not using ACT2FN
 
+from basicsr.archs.NAFNet_arch import NAFBlock
 from basicsr.utils.registry import ARCH_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -283,11 +284,50 @@ class ConvNeXtModel_HFCompat(nn.Module):
             in_channels = out_channels
             current_drop_path_idx += stage_depth
 
-        # Final LayerNorm (applied after pooling and concatenation)
-        # Note: HF applies it in channel_last format implicitly after transpose
-        self.layer_norm = nn.LayerNorm(hidden_sizes[-1], eps=layer_norm_eps)
-        # Pooling layer
-        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.decoder_blocks = nn.ModuleList()
+        last_stage_idx = num_stages - 1
+        for i in range(last_stage_idx, 0, -1):
+            # i 是当前阶段的索引 (e.g., 3, 2, 1)
+            # i-1 是跳跃连接的索引和上一个解码阶段的输出目标通道 (e.g., 2, 1, 0)
+
+            in_dim = hidden_sizes[i]      # 当前解码阶段的输入通道 (来自前一阶段上采样/最深层)
+            skip_dim = hidden_sizes[i-1]  # 跳跃连接通道 (也是上采样后期望的通道)
+
+            # 1. PixelShuffle 上采样层 (Upconv)
+            # Cin (in_dim) -> Cout * 4 (skip_dim * 4) -> PixelShuffle(2) -> skip_dim
+            upconv = nn.Sequential(
+                nn.Conv2d(in_dim, skip_dim * 4, 1, bias=False),
+                nn.PixelShuffle(2)
+            )
+
+            # 2. 融合降维层 (Conv)
+            # Concatenation: skip_dim (Upconv out) + skip_dim (Skip connection) = 2 * skip_dim
+            conv_dec = nn.Conv2d(skip_dim * 2, skip_dim, 1)
+
+            # 3. NAF 解码块 (Dec Block)
+            dec_block = NAFBlock(skip_dim)
+
+            self.decoder_blocks.append(
+                nn.ModuleDict({
+                    'upconv': upconv,
+                    'conv_dec': conv_dec,
+                    'dec_block': dec_block
+                })
+            )
+
+        # --- 最终上采样到原始尺寸 (Stage 0 输出到原图) ---
+        upsample_factor = 4 # 假设 Stage 0 输出是 1/4 尺寸
+        out_channels = hidden_sizes[0]
+        final_intermediate_channels = num_channels * (upsample_factor ** 2)
+        self.upconv_final = nn.Sequential(
+            nn.Conv2d(
+                in_channels=hidden_sizes[0], # Stage 0 的输出通道
+                out_channels=final_intermediate_channels,
+                kernel_size=1,
+                bias=False
+            ),
+            nn.PixelShuffle(upscale_factor=upsample_factor)
+        )
 
         self.hidden_sizes = hidden_sizes # Store just in case
 
@@ -306,7 +346,6 @@ class ConvNeXtModel_HFCompat(nn.Module):
     def forward(
         self,
         pixel_values: torch.FloatTensor,
-        output_hidden_states: Optional[bool] = None # Allow overriding init flag
     ) -> Dict[str, Optional[Union[torch.Tensor, Tuple[torch.Tensor]]]]:
         """
         Mimics HF DINOv3ConvNextModel forward pass.
@@ -318,44 +357,40 @@ class ConvNeXtModel_HFCompat(nn.Module):
                                (or after, depending on exact HF implementation nuance - here using after LN).
             - 'hidden_states': Tuple of tensors (input + output of each stage), if requested.
         """
-        actual_output_hidden_states = output_hidden_states if output_hidden_states is not None else self.output_hidden_states
-
         hidden_states = pixel_values
-        all_hidden_states_list = [hidden_states] if actual_output_hidden_states else None
+        hidden_states_list = []
 
         # --- Pass through stages ---
         for stage in self.stages:
             hidden_states = stage(hidden_states)
-            if actual_output_hidden_states:
-                all_hidden_states_list.append(hidden_states)
+            hidden_states_list.append(hidden_states)
 
-        # --- Mimic HF Output Formatting ---
-        # 1. Global Average Pooling for "CLS" token
-        # Input to pool is last stage output: (B, C_last, H_last, W_last)
-        pooled_output_nhwc = self.pool(hidden_states) # (B, C_last, 1, 1)
+        current_features = hidden_states_list[-1]
 
-        # 2. Flatten pooled and patch features
-        # (B, C, 1, 1) -> (B, 1, C)
-        pooled_output_tokens = pooled_output_nhwc.flatten(2).transpose(1, 2)
-        # (B, C, H, W) -> (B, H*W, C)
-        patch_tokens = hidden_states.flatten(2).transpose(1, 2)
+        skip_connections = hidden_states_list[:-1]
+        reversed_skip_connections = skip_connections[::-1]
 
-        # 3. Concatenate pooled ("CLS") and patch tokens
-        # Result shape: (B, 1 + H*W, C)
-        concatenated_tokens = torch.cat([pooled_output_tokens, patch_tokens], dim=1)
+        # N-1 个解码阶段
+        for i, dec_mod in enumerate(self.decoder_blocks):
+            skip_feature = reversed_skip_connections[i]
 
-        # 4. Apply final LayerNorm
-        last_hidden_state = self.layer_norm(concatenated_tokens)
+            # 1. PixelShuffle 上采样 (Upconv)
+            D_up = dec_mod['upconv'](current_features)
 
-        # Pooler output is typically the first token (pooled representation)
-        pooler_output = last_hidden_state[:, 0]
+            # 2. 跳跃连接和融合
+            # 确保跳跃连接特征图的尺寸与上采样特征图的尺寸匹配 (U-Net)
+            # 在实际操作中，您可能需要确保 D_up 和 skip_feature 的 H, W 尺寸严格一致
+            # 如果不一致，可能需要进行裁剪或插值
 
-        return_dict = {
-             "last_hidden_state": last_hidden_state,
-             "pooler_output": pooler_output,
-             "hidden_states": tuple(all_hidden_states_list) if actual_output_hidden_states else None
-        }
-        return return_dict
+            D_fused = torch.cat([D_up, skip_feature], dim=1)  # 拼接
+            D_fused = dec_mod['conv_dec'](D_fused)            # 降维
+
+            # 3. NAFBlock
+            current_features = dec_mod['dec_block'](D_fused)  # NAFBlock
+
+        output = self.upconv_final(current_features)
+
+        return output
 
 
 # --- Configuration Dictionary ---
@@ -366,151 +401,12 @@ convnext_hf_configs = {
     "large": dict(depths=[3, 3, 27, 3], hidden_sizes=[192, 384, 768, 1536]),
 }
 
-# --- Factory functions ---
-def create_dinov3_convnext_backbone(
-    model_name: str = "tiny",
-    pretrained: bool = False,
-    weights_path: Optional[str] = None,
-    strict_load: bool = True,
-    out_indices: Optional[List[int]] = None,
-    **kwargs
-) -> ConvNeXtBackbone_HFCompat:
-    # --- [Keep the factory function for Backbone from previous response] ---
-    if model_name not in convnext_hf_configs:
-        raise ValueError(f"Unknown model_name: {model_name}. Available: {list(convnext_hf_configs.keys())}")
-
-    config = convnext_hf_configs[model_name].copy() # Use copy
-    config.update(kwargs) # Allow overriding config defaults via kwargs
-
-    if out_indices is None:
-         # Default for backbone: output features from all stages for U-Net
-         out_indices = list(range(len(config['depths'])))
-         # Or maybe just the last one? Depends on usage. Let's default to all.
-         # out_indices = [len(config['depths']) - 1]
-
-    model = ConvNeXtBackbone_HFCompat(out_indices=out_indices, **config)
-
-    if pretrained and weights_path:
-        logger.info(f"Loading pretrained weights for Backbone from: {weights_path}")
-        state_dict = torch.load(weights_path, map_location='cpu')
-        # Check if state_dict is nested (e.g. from HF save)
-        if 'model' in state_dict: # Common key used by HF .save_pretrained
-             state_dict = state_dict['model']
-        elif 'state_dict' in state_dict: # Another common pattern
-             state_dict = state_dict['state_dict']
-        # Add more checks if needed based on how the .pth was saved
-
-        cleaned_state_dict = {}
-        for k, v in state_dict.items():
-            if k.startswith('module.'): # Handle DDP
-                cleaned_state_dict[k[7:]] = v
-            # Specific HF to standalone key renaming (if any needed, seems names match well)
-            # Example: k = k.replace('hf_layer_name', 'standalone_layer_name')
-            else:
-                cleaned_state_dict[k] = v
-
-        missing_keys, unexpected_keys = model.load_state_dict(cleaned_state_dict, strict=strict_load)
-        if missing_keys: logger.warning(f"Backbone Missing keys: {missing_keys}")
-        if unexpected_keys: logger.warning(f"Backbone Unexpected keys: {unexpected_keys}")
-    elif pretrained and not weights_path:
-         logger.warning("Backbone `pretrained=True` but no `weights_path`. Randomly initialized.")
-
-    return model
-
-
-def create_dinov3_convnext_model(
-    model_name: str = "tiny", # 'tiny', 'small', 'base', 'large'
-    pretrained: bool = False,
-    weights_path: Optional[str] = None,
-    strict_load: bool = True,
-    **kwargs # Pass other args like drop_path_rate, layer_scale_init_value, output_hidden_states
-) -> ConvNeXtModel_HFCompat:
-    """
-    Creates a standalone DINOv3 ConvNeXt model (ViT-like output) compatible with HF weights.
-    """
-    if model_name not in convnext_hf_configs:
-        raise ValueError(f"Unknown model_name: {model_name}. Available: {list(convnext_hf_configs.keys())}")
-
-    config = convnext_hf_configs[model_name].copy()
-    config.update(kwargs)
-
-    model = ConvNeXtModel_HFCompat(**config)
-
-    if pretrained and weights_path:
-        logger.info(f"Loading pretrained weights for Model from: {weights_path}")
-        state_dict = torch.load(weights_path, map_location='cpu')
-        # Handle potential nesting
-        if 'model' in state_dict: state_dict = state_dict['model']
-        elif 'state_dict' in state_dict: state_dict = state_dict['state_dict']
-
-        cleaned_state_dict = {}
-        for k, v in state_dict.items():
-            if k.startswith('module.'):
-                cleaned_state_dict[k[7:]] = v
-            else:
-                cleaned_state_dict[k] = v
-                
-        # --- Specific Key Adjustment for ConvNeXtModel vs Backbone ---
-        # The HF DINOv3ConvNextModel includes a final 'layer_norm'. The weights file likely
-        # contains keys like 'layer_norm.weight' and 'layer_norm.bias' at the top level.
-        # Our ConvNeXtModel_HFCompat also has self.layer_norm.
-        # The ConvNeXtBackbone_HFCompat *does not* have this final layer_norm.
-        # The loading logic here *should* match the keys directly for ConvNeXtModel_HFCompat.
-
-        missing_keys, unexpected_keys = model.load_state_dict(cleaned_state_dict, strict=strict_load)
-        if missing_keys: logger.warning(f"Model Missing keys: {missing_keys}")
-        # Unexpected keys might include things like 'pool' if it's not saved explicitly,
-        # or if the loaded state dict is actually from the Backbone variant.
-        if unexpected_keys: logger.warning(f"Model Unexpected keys: {unexpected_keys}")
-    elif pretrained and not weights_path:
-         logger.warning("Model `pretrained=True` but no `weights_path`. Randomly initialized.")
-
-    return model
-
-# # 加载模型权重
-# # 创建 tiny 模型，输出最后两个 stage 的特征
-# backbone = create_dinov3_convnext_model(
-#     model_name="tiny",
-#     # out_indices=[2, 3],
-#     pretrained=True,
-#     weights_path="/home/blu/work/repos/BasicSR/working/dinov3_pth/dinov3-convnext-tiny-pretrain-lvd1689m-model.pth", # 使用上面保存的 .pth
-#     strict_load=True # 使用 True 检查是否所有 backbone 键都匹配
-# )
-
-# 现在 backbone 可以作为 nn.Module 在你的 BasicSR 架构中使用了
-# 例如: self.backbone = backbone
-
 # # --- Example Usage ---
 # if __name__ == "__main__":
-#     # --- Test Backbone ---
-#     print("--- Testing Backbone ---")
-#     backbone = create_dinov3_convnext_backbone(
-#         model_name="tiny",
-#         out_indices=[0, 1, 2, 3], # Get all stage outputs
-#         # pretrained=True, weights_path="path/to/pytorch_model.pth"
+#     model = ConvNeXtModel_HFCompat(
+#         output_hidden_states=True # Also request intermediate states
 #     )
-#     dummy_input = torch.randn(2, 3, 224, 224)
-#     features = backbone(dummy_input)
-#     print(f"Number of output feature maps: {len(features)}")
-#     for i, feat in enumerate(features):
-#         print(f"Feature map {i} shape: {feat.shape}") # Should be H/4, H/8, H/16, H/32
-#
-#     # --- Test Model ---
-#     print("\n--- Testing Model ---")
-#     model = create_dinov3_convnext_model(
-#          model_name="tiny",
-#          # pretrained=True, weights_path="path/to/pytorch_model.pth",
-#          output_hidden_states=True # Also request intermediate states
-#     )
-#     # print("\nKeys expected by model:")
-#     # print(list(model.state_dict().keys()))
 #     dummy_input = torch.randn(2, 3, 256, 256)
 #     output = model(dummy_input)
-#
-#     print("Model Output Keys:", output.keys())
-#     print("Last Hidden State shape:", output['last_hidden_state'].shape) # Should be (B, 1 + HW/32^2, C)
-#     print("Pooler Output shape:", output['pooler_output'].shape) # Should be (B, C)
-#     if output['hidden_states']:
-#          print("Number of hidden_states:", len(output['hidden_states'])) # Should be num_stages + 1
-#          print("Shape of first hidden_state (input):", output['hidden_states'][0].shape)
-#          print("Shape of last hidden_state (before pool/norm):", output['hidden_states'][-1].shape)
+#     print("input shape: ", dummy_input.shape)
+#     print("output shape: ", output.shape)
