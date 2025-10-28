@@ -11,6 +11,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F # Needed for GELU if not using ACT2FN
 
+from basicsr.utils.registry import ARCH_REGISTRY
+
 logger = logging.getLogger(__name__)
 
 # --- Helper Functions and Classes (DropPath, PlainDropPath, PlainLayerNorm, ConvNeXtLayer, ConvNeXtStage) ---
@@ -232,6 +234,7 @@ class ConvNeXtBackbone_HFCompat(nn.Module):
 
 
 # --- NEW: Standalone Model Class (Outputs ViT-like pooled + patch tokens) ---
+@ARCH_REGISTRY.register()
 class ConvNeXtModel_HFCompat(nn.Module):
     """
     Standalone PyTorch ConvNeXt Model compatible with Hugging Face DINOv3 weights.
