@@ -250,6 +250,7 @@ class ConvNeXtModel_HFCompat(nn.Module):
         layer_scale_init_value: float = 1e-6,
         layer_norm_eps: float = 1e-6,
         hidden_act: str = "gelu",
+        freeze_encoder: bool = True,
         output_hidden_states: bool = False, # Added for compatibility, affects return value slightly
     ):
         super().__init__()
@@ -330,6 +331,10 @@ class ConvNeXtModel_HFCompat(nn.Module):
         )
 
         self.hidden_sizes = hidden_sizes # Store just in case
+        if freeze_encoder:
+            print("Frozen: ConvNeXt encoder...")
+            for param in self.stages.parameters():
+                param.requires_grad = False
 
         self.apply(self._init_weights)
 

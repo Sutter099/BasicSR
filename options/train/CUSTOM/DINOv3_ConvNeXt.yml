@@ -45,6 +45,7 @@ datasets:
 
 network_g:
   type: ConvNeXtModel_HFCompat
+  freeze_encoder: true
   # depths: [3, 3, 9, 3]
   # dims: [96, 192, 384, 768]
 
