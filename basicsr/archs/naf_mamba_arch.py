@@ -26,6 +26,7 @@ from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_
 from pytorch_wavelets import DWTForward, DWTInverse
 
 from basicsr.archs.mpma import *
+from basicsr.archs.idf_arch import *
 
 class SimpleGate(nn.Module):
     def forward(self, x):
@@ -160,6 +161,8 @@ class NAFMamba(nn.Module):
             # self.decoders_lf.append(nn.Sequential(*[NAFBlock(chan, FFN_Expand=1) for _ in range(num // 2 + 1)]))
             # self.decoders_stripe.append(WaveletDenoiseBlock(chan))
 
+        self.idf = IDFNet(num_iter=5, num_channels=img_channel, hidden_channels=32)
+
         self.padder_size = 2 ** len(self.encoders)
 
     def run_decoder(self, decoders, upsamplers, x, skips):
@@ -189,6 +192,8 @@ class NAFMamba(nn.Module):
         pred_detail = self.ending(x_detail)
 
         final_clean_image = inp + pred_detail
+
+        final_clean_image = self.idf(final_clean_image)
 
         return final_clean_image[:, :, :H, :W]
 
