@@ -4,6 +4,8 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Optional, Tuple, List
 
+from basicsr.utils.registry import ARCH_REGISTRY
+
 # -------------------------
 # Normalization
 # -------------------------
@@ -256,6 +258,7 @@ class DIDBlock(nn.Module):
         else:
             return out, x_in - out, self.last_kernels.clone()
 
+@ARCH_REGISTRY.register()
 class IDFNet(nn.Module):
     """Iterative Dynamic Filtering (IDF) Network.
 
