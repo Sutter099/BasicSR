@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from basicsr.archs.sfnet_layers import *
+from basicsr.utils.registry import ARCH_REGISTRY
 
 # Encoder Block
 class EBlock(nn.Module):
@@ -54,6 +55,7 @@ class FAM(nn.Module):
     def forward(self, x1, x2):
         return self.merge(torch.cat([x1, x2], dim=1))
 
+@ARCH_REGISTRY.register()
 class SFNet(nn.Module):
     def __init__(self, mode, num_res=16):
         super(SFNet, self).__init__()
@@ -137,9 +139,35 @@ class SFNet(nn.Module):
         z = self.feat_extract[5](z)
         outputs.append(z+x)
 
-        return outputs
+        return outputs[-1]
 
 
 
 def build_net(mode):
     return SFNet(mode)
+#
+# if __name__ == '__main__':
+#     # Example usage:
+#     # Create a dummy input tensor (batch_size, channels, height, width)
+#     input_tensor = torch.randn(3, 3, 256, 256)
+#
+#     # Instantiate the SFNet model
+#     # 'nearest' is a placeholder for the mode, replace with actual mode if needed
+#     model = SFNet(mode=['train'])
+#
+#     # Pass the input tensor through the model
+#     output_tensors = model(input_tensor)
+#
+#     # Print the shapes of the output tensors
+#     print("Output tensor shapes:")
+#     for i, output in enumerate(output_tensors):
+#         print(f"Output {i+1}: {output.shape}")
+#
+#     # Example of how to use the build_net function
+#     model_from_builder = build_net(mode='nearest')
+#     print("\nModel created using build_net function:")
+#     print(model_from_builder)
+#
+#     # You can also check the number of parameters
+#     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+#     print(f"\nNumber of trainable parameters: {num_params}")
