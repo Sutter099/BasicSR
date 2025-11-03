@@ -20,6 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from basicsr.archs.arch_util import LayerNorm2d, to_2tuple, trunc_normal_
 from basicsr.archs.local_arch import Local_Base
+from basicsr.archs.wConv import wConv2d
 from basicsr.utils.registry import ARCH_REGISTRY
 from einops import rearrange, repeat
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
@@ -37,7 +38,7 @@ class NAFBlock(nn.Module):
         super().__init__()
         dw_channel = c * DW_Expand
         self.conv1 = nn.Conv2d(in_channels=c, out_channels=dw_channel, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
-        self.conv2 = nn.Conv2d(in_channels=dw_channel, out_channels=dw_channel, kernel_size=3, padding=1, stride=1, groups=dw_channel,
+        self.conv2 = wConv2d(in_channels=dw_channel, out_channels=dw_channel, kernel_size=3, den=[0.75], padding=1, stride=1, groups=dw_channel,
                                bias=True)
         self.conv3 = nn.Conv2d(in_channels=dw_channel // 2, out_channels=c, kernel_size=1, padding=0, stride=1, groups=1, bias=True)
         
@@ -112,9 +113,9 @@ class NAFMamba(nn.Module):
     def __init__(self, img_channel=3, width=16, middle_blk_num=[], enc_blk_nums=[], dec_blk_nums=[], image_size=256):
         super().__init__()
 
-        self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1,
+        self.intro = wConv2d(in_channels=img_channel, out_channels=width, kernel_size=3, den=[0.75], padding=1, stride=1,
                                groups=1, bias=True)
-        self.ending = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1,
+        self.ending = wConv2d(in_channels=width, out_channels=img_channel, kernel_size=3, den=[0.75], padding=1, stride=1,
                                 groups=1, bias=True)
 
         self.encoders = nn.ModuleList()
