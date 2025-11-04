@@ -16,12 +16,12 @@ datasets:
   train:
     name: SIDD
     type: PairedImageDataset
-    dataroot_gt: datasets/ascnet_data/train/gt_train.lmdb
-    dataroot_lq: datasets/ascnet_data/train/lq_train.lmdb
+    dataroot_gt: datasets/hm_tir/train/gt
+    dataroot_lq: datasets/hm_tir/train/noise
 
     filename_tmpl: '{}'
     io_backend:
-      type: lmdb
+      type: disk
 
     gt_size: 256
     use_hflip: false
@@ -30,17 +30,17 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 8
-    batch_size_per_gpu: 4
+    batch_size_per_gpu: 2
     dataset_enlarge_ratio: 1
     prefetch_mode: ~
 
   val:
     name: SIDD_val
     type: PairedImageDataset
-    dataroot_gt: datasets/ascnet_data/val/gt_val.lmdb
-    dataroot_lq: datasets/ascnet_data/val/lq_val.lmdb
+    dataroot_gt: datasets/hm_tir/val/gt
+    dataroot_lq: datasets/hm_tir/val/noise
     io_backend:
-      type: lmdb
+      type: disk
 
 
 network_g:
@@ -81,7 +81,7 @@ train:
 
 # validation settings
 val:
-  val_freq: !!float 2e4
+  val_freq: !!float 2e1
   save_img: false
   use_image: false
 
@@ -97,7 +97,7 @@ val:
 
 # logging settings
 logger:
-  print_freq: 200
+  print_freq: 10
   save_checkpoint_freq: !!float 5e3
   use_tb_logger: true
   wandb:
