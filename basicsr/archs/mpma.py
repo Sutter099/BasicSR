@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 try:
     from mamba_ssm import Mamba
@@ -163,9 +164,21 @@ class MPMA(nn.Module):  #B C H W Multipole Attention 多极注意力
 
         res = x_out.pop()
         for l, out_down in enumerate(x_out[::-1]):
-            res = out_down + (1 / (l + 1)) * self.up(res)
+            res_up = self.up(res)
 
-        return res.permute(0,3,2,1)
+            h_out, w_out = out_down.shape[1:3]
+            h_res, w_res = res_up.shape[1:3]
+
+            pad_w = w_out - w_res
+            pad_h = h_out - h_res
+
+            if pad_w > 0 or pad_h > 0:
+                res_up = F.pad(res_up, (0, 0, 0, pad_w, 0, pad_h))
+
+            res = out_down + (1 / (l + 1)) * res_up
+
+        # return res.permute(0,3,2,1)
+        return res.permute(0,3,1,2)
 
 class MPMABlock(nn.Module): # MultipoleMambaAttention多极曼巴注意力
     """
