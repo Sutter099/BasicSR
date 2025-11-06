@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from pytorch_wavelets import DWTForward, DWTInverse
 
 class LayerNormFunction(torch.autograd.Function):
     """
@@ -94,6 +95,49 @@ class SimpleGate(nn.Module):
         # 元素乘：筛选有效特征（抑制噪声，保留关键信息）
         return x1 * x2
 
+class DWTMLP(nn.Module):
+    """
+    基于离散小波变换(DWT)的MLP模块
+    """
+    def __init__(self, c, expand=2, wave='haar'):
+        super().__init__()
+        # J=1 表示只进行一级分解
+        self.dwt = DWTForward(J=1, mode='zero', wave=wave)
+        self.iwt = DWTInverse(mode='zero', wave=wave)
+
+        # 4个子带 (LL, LH, HL, HH)，所以输入通道数是 4 * c
+        hidden_dim = int(c * 4 * expand)
+        self.process = nn.Sequential(
+            nn.Conv2d(c * 4, hidden_dim, 1, 1, 0),  # 升维处理所有子带
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(hidden_dim, c * 4, 1, 1, 0)   # 降维回原通道数
+        )
+
+    def forward(self, x):
+        # 1. DWT 前向变换
+        # Yl (低频 LL): (N, C, H/2, W/2)
+        # Yh (高频列表): Yh[0] shape 为 (N, C, 3, H/2, W/2)，包含 [LH, HL, HH]
+        Yl, Yh = self.dwt(x)
+
+        # 2. 解绑高频子带并将所有子带拼接
+        # 将 Yh[0] 在 dim=2 拆分为三个 (N, C, H/2, W/2) 的张量
+        lh, hl, hh = torch.unbind(Yh[0], dim=2)
+
+        # 在通道维度拼接 4 个子带: (N, 4*C, H/2, W/2)
+        freq_inputs = torch.cat([Yl, lh, hl, hh], dim=1)
+
+        # 3. MLP 处理 (在小波域进行特征交互与调制)
+        freq_out = self.process(freq_inputs)
+
+        # 4. 拆分回子带并进行 IWT 逆变换
+        # 将 4*C 通道拆回 4 个 C 通道
+        Yl_new, lh_new, hl_new, hh_new = torch.chunk(freq_out, 4, dim=1)
+
+        # 重新堆叠高频子带: (N, C, 3, H/2, W/2)
+        Yh_new = torch.stack([lh_new, hl_new, hh_new], dim=2)
+
+        # IWT 需要传入由列表组成的元组: (Yl, [Yh1, Yh2...])
+        return self.iwt((Yl_new, [Yh_new]))
 
 class FreMLP(nn.Module):
     """
@@ -256,7 +300,7 @@ class EBlock(nn.Module):
         # 第二阶段：归一化与频率域处理
         self.norm1 = LayerNorm2d(c)  # 第一阶段输入归一化
         self.norm2 = LayerNorm2d(c)  # 第二阶段输入归一化
-        self.freq = FreMLP(nc=c, expand=2)  # 频率域处理模块
+        self.freq = DWTMLP(c=c, expand=2, wave='haar')  # 小波域处理模块
         
         # 特征融合参数（可训练，控制频率特征的贡献度）
         self.gamma = nn.Parameter(torch.zeros((1, c, 1, 1)), requires_grad=True)  # 频率特征权重
