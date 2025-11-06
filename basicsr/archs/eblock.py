@@ -216,13 +216,17 @@ class EBlock(nn.Module):
             dilation=1
         )
         
-        # 多扩张卷积分支（根据dilations列表创建，捕捉多尺度空间特征）
-        self.branches = nn.ModuleList()
-        for dilation in dilations:
-            self.branches.append(Branch(c, DW_Expand, dilation=dilation))
+        # # 多扩张卷积分支（根据dilations列表创建，捕捉多尺度空间特征）
+        # self.branches = nn.ModuleList()
+        # for dilation in dilations:
+        #     self.branches.append(Branch(c, DW_Expand, dilation=dilation))
+
+        self.large_kernel_dw = nn.Sequential(
+            nn.Conv2d(self.dw_channel, self.dw_channel, 7, 1, 3, groups=self.dw_channel, bias=True),
+        )
        
-        # 校验：扩张率列表长度与分支数量一致
-        assert len(dilations) == len(self.branches)
+        # # 校验：扩张率列表长度与分支数量一致
+        # assert len(dilations) == len(self.branches)
         
         # 空间注意力模块（SCA：Spatial Channel Attention）：全局平均池化+1×1卷积
         self.sca = nn.Sequential(
@@ -279,10 +283,11 @@ class EBlock(nn.Module):
         x = self.norm1(inp)  # (N,c,H,W)→(N,c,H,W)（通道归一化）
         x = self.conv1(self.extra_conv(x))  # (N,c,H,W)→(N,dw_channel,H,W)（升维）
         
-        # 多扩张卷积分支求和（多尺度空间特征融合）
-        z = 0
-        for branch in self.branches:
-            z += branch(x)  # 每个分支输出均为(N,dw_channel,H,W)，求和后维度不变
+        # # 多扩张卷积分支求和（多尺度空间特征融合）
+        # z = 0
+        # for branch in self.branches:
+        #     z += branch(x)  # 每个分支输出均为(N,dw_channel,H,W)，求和后维度不变
+        z = self.large_kernel_dw(x)
        
         # 门控筛选→空间注意力加权→通道降维
         z = self.sg1(z)  # (N,dw_channel,H,W)→(N,dw_channel//2,H,W)（通道拆分+元素乘）
