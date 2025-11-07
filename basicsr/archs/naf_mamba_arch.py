@@ -133,7 +133,7 @@ class NAFMamba(nn.Module):
             # Replace NAFBlock with MPMABlock for the encoder
             self.encoders.append(
                 nn.Sequential(
-                    *[EBlock(chan) for _ in range(num)]
+                    *[NAFBlock(chan) for _ in range(num)]
                 )
             )
             self.downs.append(
@@ -157,7 +157,7 @@ class NAFMamba(nn.Module):
 
             chan = chan // 2
 
-            self.decoders_detail.append(nn.Sequential(*[NAFBlock(chan) for _ in range(num)]))
+            self.decoders_detail.append(nn.Sequential(*[EBlock(chan) for _ in range(num)]))
             # self.decoders_lf.append(nn.Sequential(*[NAFBlock(chan, FFN_Expand=1) for _ in range(num // 2 + 1)]))
             # self.decoders_stripe.append(WaveletDenoiseBlock(chan))
 
