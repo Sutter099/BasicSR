@@ -30,7 +30,7 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 8
-    batch_size_per_gpu: 4
+    batch_size_per_gpu: 1
     dataset_enlarge_ratio: 1
     prefetch_mode: ~
 
@@ -45,11 +45,11 @@ datasets:
 
 network_g:
   type: NAFMamba
-  width: 64
+  width: 96
   image_size: 256
-  enc_blk_nums: [2, 2, 4, 8]
-  middle_blk_num: [12]
-  dec_blk_nums: [2, 2, 2, 2]
+  enc_blk_nums: [2]
+  middle_blk_num: [6, 6, 6]
+  dec_blk_nums: [2]
 
 # path
 path:

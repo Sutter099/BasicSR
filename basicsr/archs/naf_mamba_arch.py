@@ -128,50 +128,26 @@ class NAFMamba(nn.Module):
         self.downs = nn.ModuleList()
         self.middle_blks = nn.ModuleList()
 
-        # ========================================================== #
-        # ============== MODIFICATION IS HERE ====================== #
-        # ========================================================== #
         chan = width
         current_size = image_size
         for num in enc_blk_nums:
-            # Replace NAFBlock with MPMABlock for the encoder
             self.encoders.append(
                 nn.Sequential(
-                    *[MPMABlock(in_channels=chan, image_size=current_size) for _ in range(num)]
+                    *[NAFBlock(chan) for _ in range(num)]
                 )
             )
-            self.downs.append(
-                nn.Conv2d(chan, 2 * chan, 2, 2)
-            )
-            chan = chan * 2
-            current_size //= 2  # Update size for the next encoder level
-        # ========================================================== #
-        # ========================================================== #
 
         for num in middle_blk_num:
-            self.middle_blks.append(nn.Sequential(*[NAFBlock(chan) for _ in range(num)]))
+            self.middle_blks.append(MPMABlock(in_channels=chan, image_size=current_size, depth=num))
 
         # Build the parallel decoders (this part remains unchanged)
         for num in dec_blk_nums:
-            up_module = nn.Sequential(
-                nn.Conv2d(chan, chan * 2, 1, bias=False),
-                nn.PixelShuffle(2)
-            )
-            self.ups_detail.append(up_module)
-            # self.ups_lf.append(up_module)
-            # self.ups_stripe.append(up_module)
-
-            chan = chan // 2
-
             self.decoders_detail.append(nn.Sequential(*[NAFBlock(chan) for _ in range(num)]))
-            # self.decoders_lf.append(nn.Sequential(*[NAFBlock(chan, FFN_Expand=1) for _ in range(num // 2 + 1)]))
-            # self.decoders_stripe.append(WaveletDenoiseBlock(chan))
 
         self.padder_size = 2 ** len(self.encoders)
 
     def run_decoder(self, decoders, upsamplers, x, skips):
         for decoder, up, skip in zip(decoders, upsamplers, skips[::-1]):
-            x = up(x)
             x = x + skip
             x = decoder(x)
         return x
@@ -185,7 +161,6 @@ class NAFMamba(nn.Module):
         for encoder, down in zip(self.encoders, self.downs):
             x = encoder(x)
             encs.append(x)
-            x = down(x)
 
         for bottleneck in self.middle_blks:
             x = bottleneck(x)
