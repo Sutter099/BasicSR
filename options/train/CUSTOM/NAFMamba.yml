@@ -30,7 +30,7 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 8
-    batch_size_per_gpu: 2
+    batch_size_per_gpu: 4
     dataset_enlarge_ratio: 1
     prefetch_mode: ~
 
@@ -48,7 +48,7 @@ network_g:
   width: 64
   image_size: 256
   enc_blk_nums: [2, 2, 4, 8]
-  middle_blk_num: [12]
+  middle_blk_num: [4]
   dec_blk_nums: [2, 2, 2, 2]
 
 # path
@@ -97,7 +97,7 @@ val:
 
 # logging settings
 logger:
-  print_freq: 10
+  print_freq: 200
   save_checkpoint_freq: !!float 5e3
   use_tb_logger: true
   wandb:
