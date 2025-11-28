@@ -2,78 +2,46 @@
 # general settings
 name: 000_ATD_SRx2_scratch
 model_type: ATDModel
-scale: 2
-num_gpu: 8
-manual_seed: 0
+scale: 1
+num_gpu: 1
+manual_seed: 10
 # find_unused_parameters: True
 
 # dataset and data loader settings
 datasets:
   train:
-    name: DF2K
+    name: HM-TIR
     type: PairedImageDataset
-    dataroot_gt: datasets/DF2K/DF2K_train_HR
-    dataroot_lq: datasets/DF2K/DF2K_train_LR_bicubic/X2
-    filename_tmpl: '{}x2'
+    dataroot_gt: datasets/hm_tir/train/gt
+    dataroot_lq: datasets/hm_tir/train/noise
+    filename_tmpl: '{}'
     io_backend:
       type: disk
 
     gt_size: 128
-    use_hflip: true
-    use_rot: true
+    use_hflip: false
+    use_rot: false
 
     # data loader
-    num_worker_per_gpu: 6
-    batch_size_per_gpu: 4
+    use_shuffle: true
+    num_worker_per_gpu: 8
+    batch_size_per_gpu: 1
     dataset_enlarge_ratio: 1
-    prefetch_mode: cuda
-    pin_memory: True
-    persistent_workers: True
+    prefetch_mode: ~
 
-  val_1:
-    name: Set5
+  val:
+    name: HM-TIR_val
     type: PairedImageDataset
-    dataroot_gt: datasets/TestDataSR/HR/Set5/x2
-    dataroot_lq: datasets/TestDataSR/LR/LRBI/Set5/x2
+    dataroot_gt: datasets/hm_tir/val/gt
+    dataroot_lq: datasets/hm_tir/val/noise
     io_backend:
       type: disk
 
-  val_2:
-    name: Set14
-    type: PairedImageDataset
-    dataroot_gt: datasets/TestDataSR/HR/Set14/x2
-    dataroot_lq: datasets/TestDataSR/LR/LRBI/Set14/x2
-    io_backend:
-      type: disk
-
-  val_3:
-    name: BSD100
-    type: PairedImageDataset
-    dataroot_gt: datasets/TestDataSR/HR/B100/x2
-    dataroot_lq: datasets/TestDataSR/LR/LRBI/B100/x2
-    io_backend:
-      type: disk
-  
-  val_4:
-    name: Urban100
-    type: PairedImageDataset
-    dataroot_gt: datasets/TestDataSR/HR/Urban100/x2
-    dataroot_lq: datasets/TestDataSR/LR/LRBI/Urban100/x2
-    io_backend:
-      type: disk
-
-  val_5:
-    name: Manga109
-    type: PairedImageDataset
-    dataroot_gt: datasets/TestDataSR/HR/Manga109/x2
-    dataroot_lq: datasets/TestDataSR/LR/LRBI/Manga109/x2
-    io_backend:
-      type: disk
 
 # network structures
 network_g:
   type: ATD
-  upscale: 2
+  upscale: 1
   in_chans: 3
   img_size: 64
   embed_dim: 210
@@ -110,12 +78,12 @@ train:
     milestones: [250000]
     gamma: 0.5
 
-  total_iter: 300000
-  warmup_iter: 10000
+  total_iter: 20000
+  warmup_iter: -1
 
   # losses
   pixel_opt:
-    type: L1Loss
+    type: PSNRLoss
     loss_weight: 1.0
     reduction: mean
 
@@ -127,18 +95,17 @@ val:
   metrics:
     psnr: # metric name, can be arbitrary
       type: calculate_psnr
-      crop_border: 2
-      test_y_channel: yes
-    
+      crop_border: 0
+      test_y_channel: false
     ssim: # metric name, can be arbitrary
       type: calculate_ssim
-      crop_border: 2
-      test_y_channel: yes
+      crop_border: 0
+      test_y_channel: false
 
 # logging settings
 logger:
-  print_freq: 100
-  save_checkpoint_freq: !!float 1e4
+  print_freq: 200
+  save_checkpoint_freq: !!float 5e3
   use_tb_logger: true
   wandb:
     project: ~
