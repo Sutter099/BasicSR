@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from basicsr.archs.arch_util import to_2tuple, trunc_normal_
+from basicsr.archs.NAFNet_arch import NAFBlock
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
 from basicsr.utils.registry import ARCH_REGISTRY
 from einops import rearrange, repeat
@@ -432,23 +433,13 @@ class AttentiveLayer(nn.Module):
         self.is_last = is_last
         self.inner_rank = inner_rank
 
-        self.norm1 = norm_layer(dim)
-        self.norm2 = norm_layer(dim)
+        self.local_block = NAFBlock(dim)
+
         self.norm3 = norm_layer(dim)
         self.norm4 = norm_layer(dim)
 
         layer_scale = 1e-4
-        self.scale1 = nn.Parameter(layer_scale * torch.ones(dim), requires_grad=True)
         self.scale2 = nn.Parameter(layer_scale * torch.ones(dim), requires_grad=True)
-
-        self.wqkv = nn.Linear(dim, 3 * dim, bias=qkv_bias)
-
-        self.win_mhsa = WindowAttention(
-            self.dim,
-            window_size=to_2tuple(self.window_size),
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
-        )
 
         self.assm = ASSM(
             self.dim,
@@ -461,7 +452,6 @@ class AttentiveLayer(nn.Module):
 
         mlp_hidden_dim = int(dim * self.mlp_ratio)
 
-        self.convffn1 = ConvFFN(in_features=dim, hidden_features=mlp_hidden_dim, kernel_size=convffn_kernel_size, )
         self.convffn2 = ConvFFN(in_features=dim, hidden_features=mlp_hidden_dim, kernel_size=convffn_kernel_size, )
 
         self.embeddingA = nn.Embedding(self.inner_rank, d_state)
@@ -470,31 +460,18 @@ class AttentiveLayer(nn.Module):
     def forward(self, x, x_size, params):
         h, w = x_size
         b, n, c = x.shape
-        c3 = 3 * c
 
-        # part1: Window-MHSA
-        shortcut = x
-        x = self.norm1(x)
-        qkv = self.wqkv(x)
-        qkv = qkv.reshape(b, h, w, c3)
-        if self.shift_size > 0:
-            shifted_qkv = torch.roll(qkv, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
-            attn_mask = params['attn_mask']
-        else:
-            shifted_qkv = qkv
-            attn_mask = None
-        x_windows = window_partition(shifted_qkv, self.window_size)
-        x_windows = x_windows.view(-1, self.window_size * self.window_size, c3)
-        attn_windows = self.win_mhsa(x_windows, rpi=params['rpi_sa'], mask=attn_mask)
-        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, c)
-        shifted_x = window_reverse(attn_windows, self.window_size, h, w)  # b h' w' c
-        if self.shift_size > 0:
-            attn_x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
-        else:
-            attn_x = shifted_x
-        x_win = attn_x.view(b, n, c) + shortcut
-        x_win = self.convffn1(self.norm2(x_win), x_size) + x_win
-        x = shortcut * self.scale1 + x_win
+        # -----------------------------------------------------------
+        # Part 1: Local Block (NAFBlock)
+        # -----------------------------------------------------------
+        # NAFBlock need [B, C, H, W]
+        x_in = x.transpose(1, 2).view(b, c, h, w).contiguous()
+
+        # NAFBlock: Norm -> Mixer -> Add -> Norm -> FFN -> Add
+        x_out = self.local_block(x_in)
+
+        # resize to [B, N, C] for ASE
+        x = x_out.flatten(2).transpose(1, 2).contiguous()
 
         # part2: Attentive State Space
         shortcut = x
