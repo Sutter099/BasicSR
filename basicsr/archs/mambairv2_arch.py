@@ -202,12 +202,14 @@ class WindowAttention(nn.Module):
     def extra_repr(self) -> str:
         return f'dim={self.dim}, window_size={self.window_size}, num_heads={self.num_heads}, qkv_bias={self.qkv_bias}'
 
+
 class ASSM(nn.Module):
-    def __init__(self, dim, d_state, input_resolution, num_tokens=64, inner_rank=None, mlp_ratio=2.):
+    def __init__(self, dim, d_state, input_resolution, num_tokens=64, inner_rank=128, mlp_ratio=2.):
         super().__init__()
         self.dim = dim
         self.input_resolution = input_resolution
         self.num_tokens = num_tokens
+        self.inner_rank = inner_rank
 
         # Mamba params
         self.expand = mlp_ratio
@@ -226,35 +228,28 @@ class ASSM(nn.Module):
             nn.Conv2d(hidden, hidden, 3, 1, 1, groups=hidden),
         )
 
-        self.centroid_proj = nn.Linear(self.dim, self.d_state)
+        self.embeddingB = nn.Embedding(self.num_tokens, self.inner_rank)  # [64,32] [32, 48] = [64,48]
+        self.embeddingB.weight.data.uniform_(-1 / self.num_tokens, 1 / self.num_tokens)
 
         self.route = nn.Sequential(
             nn.Linear(self.dim, self.dim // 3),
             nn.GELU(),
             nn.Linear(self.dim // 3, self.num_tokens),
+            nn.LogSoftmax(dim=-1)
         )
 
-    def forward(self, x, x_size, token=None):
+    def forward(self, x, x_size, token):
         B, n, C = x.shape
         H, W = x_size
 
-        logits = self.route(x)  # [B, n, num_tokens]
+        full_embedding = self.embeddingB.weight @ token.weight  # [128, C]
 
-        soft_assign = F.softmax(logits, dim=-1) # [B, n, num_tokens]
+        pred_route = self.route(x)  # [B, HW, num_token]
+        cls_policy = F.gumbel_softmax(pred_route, hard=True, dim=-1)  # [B, HW, num_token]
 
-        feature_centroids = torch.bmm(soft_assign.transpose(1, 2), x)
+        prompt = torch.matmul(cls_policy, full_embedding).view(B, n, self.d_state)
 
-        cluster_counts = soft_assign.sum(dim=1, keepdim=True).transpose(1, 2) + 1e-6
-        feature_centroids = feature_centroids / cluster_counts
-
-        dynamic_prompt_pool = self.centroid_proj(feature_centroids)
-
-        cls_policy = F.gumbel_softmax(logits, hard=True, dim=-1) # [B, n, num_tokens]
-
-        # [B, n, num_tokens] @ [B, num_tokens, d_state] -> [B, n, d_state]
-        prompt = torch.matmul(cls_policy, dynamic_prompt_pool)
-
-        detached_index = torch.argmax(cls_policy.detach(), dim=-1, keepdim=False).view(B, n)
+        detached_index = torch.argmax(cls_policy.detach(), dim=-1, keepdim=False).view(B, n)  # [B, HW]
         x_sort_values, x_sort_indices = torch.sort(detached_index, dim=-1, stable=False)
         x_sort_indices_reverse = index_reverse(x_sort_indices)
 
@@ -460,7 +455,7 @@ class AttentiveLayer(nn.Module):
             d_state,
             input_resolution=input_resolution,
             num_tokens=num_tokens,
-            # inner_rank=inner_rank,
+            inner_rank=inner_rank,
             mlp_ratio=mlp_ratio
         )
 
@@ -468,6 +463,9 @@ class AttentiveLayer(nn.Module):
 
         self.convffn1 = ConvFFN(in_features=dim, hidden_features=mlp_hidden_dim, kernel_size=convffn_kernel_size, )
         self.convffn2 = ConvFFN(in_features=dim, hidden_features=mlp_hidden_dim, kernel_size=convffn_kernel_size, )
+
+        self.embeddingA = nn.Embedding(self.inner_rank, d_state)
+        self.embeddingA.weight.data.uniform_(-1 / self.inner_rank, 1 / self.inner_rank)
 
     def forward(self, x, x_size, params):
         h, w = x_size
@@ -500,7 +498,7 @@ class AttentiveLayer(nn.Module):
 
         # part2: Attentive State Space
         shortcut = x
-        x_aca = self.assm(self.norm3(x), x_size) + x
+        x_aca = self.assm(self.norm3(x), x_size, self.embeddingA) + x
         x = x_aca + self.convffn2(self.norm4(x_aca), x_size)
         x = shortcut * self.scale2 + x
 
