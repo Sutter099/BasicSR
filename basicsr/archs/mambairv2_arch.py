@@ -416,6 +416,7 @@ class AttentiveLayer(nn.Module):
                  qkv_bias=True,
                  norm_layer=nn.LayerNorm,
                  is_last=False,
+                 num_local_blocks=2
                  ):
         super().__init__()
 
@@ -433,7 +434,11 @@ class AttentiveLayer(nn.Module):
         self.is_last = is_last
         self.inner_rank = inner_rank
 
-        self.local_block = NAFBlock(dim)
+        self.local_blocks = nn.Sequential(*[
+            NAFBlock(
+                c=dim,
+            ) for _ in range(num_local_blocks)
+        ])
 
         self.norm3 = norm_layer(dim)
         self.norm4 = norm_layer(dim)
@@ -468,7 +473,7 @@ class AttentiveLayer(nn.Module):
         x_in = x.transpose(1, 2).view(b, c, h, w).contiguous()
 
         # NAFBlock: Norm -> Mixer -> Add -> Norm -> FFN -> Add
-        x_out = self.local_block(x_in)
+        x_out = self.local_blocks(x_in)
 
         # resize to [B, N, C] for ASE
         x = x_out.flatten(2).transpose(1, 2).contiguous()
