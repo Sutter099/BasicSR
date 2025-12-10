@@ -204,67 +204,123 @@ class WindowAttention(nn.Module):
 
 
 class ASSM(nn.Module):
-    def __init__(self, dim, d_state, input_resolution, num_tokens=64, inner_rank=128, mlp_ratio=2.):
+    def __init__(self, dim, d_state=16, input_resolution=None, num_tokens=64, mlp_ratio=2.):
         super().__init__()
         self.dim = dim
+        self.d_state_local = d_state
+        self.d_state_global = d_state * 4
         self.input_resolution = input_resolution
-        self.num_tokens = num_tokens
-        self.inner_rank = inner_rank
+        self.num_tokens = num_tokens  # K, num of cluster
 
-        # Mamba params
-        self.expand = mlp_ratio
-        hidden = int(self.dim * self.expand)
-        self.d_state = d_state
-        self.selectiveScan = Selective_Scan(d_model=hidden, d_state=self.d_state, expand=1)
-        self.out_norm = nn.LayerNorm(hidden)
-        self.act = nn.SiLU()
-        self.out_proj = nn.Linear(hidden, dim, bias=True)
-
-        self.in_proj = nn.Sequential(
-            nn.Conv2d(self.dim, hidden, 1, 1, 0),
-        )
-
-        self.CPE = nn.Sequential(
-            nn.Conv2d(hidden, hidden, 3, 1, 1, groups=hidden),
-        )
-
-        self.embeddingB = nn.Embedding(self.num_tokens, self.inner_rank)  # [64,32] [32, 48] = [64,48]
-        self.embeddingB.weight.data.uniform_(-1 / self.num_tokens, 1 / self.num_tokens)
-
+        # --- 1. Router ---
+        # calc the cluster each pixel belongs to
         self.route = nn.Sequential(
-            nn.Linear(self.dim, self.dim // 3),
+            nn.Linear(dim, dim // 4),
             nn.GELU(),
-            nn.Linear(self.dim // 3, self.num_tokens),
-            nn.LogSoftmax(dim=-1)
+            nn.Linear(dim // 4, num_tokens)
         )
+        # a uniform distribution
+        nn.init.orthogonal_(self.route[-1].weight)
 
-    def forward(self, x, x_size, token):
+        # --- 2. double stream SSM ---
+
+        # [stream A] Detail Stream
+        # seq length: L (num of pixel in a full img)
+        # capture detail, local features, little d_state
+        local_hidden = int(dim * mlp_ratio)
+        self.local_proj = nn.Linear(dim, local_hidden)
+        self.ssm_local = Selective_Scan(
+            d_model=local_hidden,
+            d_state=self.d_state_local,
+            expand=1
+        )
+        self.local_out = nn.Linear(local_hidden, dim)
+
+        # [stream B] Global/Centroid Stream
+        # seq length: K (num of centroids)
+        # capture long-range semantics, large d_state
+        global_hidden = int(dim * mlp_ratio)
+        self.global_proj = nn.Linear(dim, global_hidden)
+        self.ssm_global = Selective_Scan(
+            d_model=global_hidden,
+            d_state=self.d_state_global,
+            expand=1
+        )
+        self.global_out = nn.Linear(global_hidden, dim)
+
+        # --- 3. support ---
+        self.norm = nn.LayerNorm(dim)
+        self.fusion = nn.Linear(dim * 2, dim)
+
+    def forward(self, x, x_size, token=None):
+        """
+        x: [B, n, C]
+        """
         B, n, C = x.shape
-        H, W = x_size
+        # x_size (H, W)
 
-        full_embedding = self.embeddingB.weight @ token.weight  # [128, C]
+        x_norm = self.norm(x)
 
-        pred_route = self.route(x)  # [B, HW, num_token]
-        cls_policy = F.gumbel_softmax(pred_route, hard=True, dim=-1)  # [B, HW, num_token]
+        # =======================================================
+        # Part 1: Multipole Clustering
+        # =======================================================
 
-        prompt = torch.matmul(cls_policy, full_embedding).view(B, n, self.d_state)
+        logits = self.route(x_norm) # [B, n, K]
 
-        detached_index = torch.argmax(cls_policy.detach(), dim=-1, keepdim=False).view(B, n)  # [B, HW]
-        x_sort_values, x_sort_indices = torch.sort(detached_index, dim=-1, stable=False)
-        x_sort_indices_reverse = index_reverse(x_sort_indices)
+        # Soft Assignment) - S matrix
+        # S_ik: probability of i_th pixel belongs to k_th centroid
+        soft_assign = F.softmax(logits, dim=-1) # [B, n, K]
 
-        x = x.permute(0, 2, 1).reshape(B, C, H, W).contiguous()
-        x = self.in_proj(x)
-        x = x * torch.sigmoid(self.CPE(x))
-        cc = x.shape[1]
-        x = x.view(B, cc, -1).contiguous().permute(0, 2, 1)  # b,n,c
+        # =======================================================
+        # Part 2: Global Stream - K token
+        # =======================================================
 
-        semantic_x = semantic_neighbor(x, x_sort_indices) # SGN-unfold
-        y = self.selectiveScan(semantic_x, prompt)
-        y = self.out_proj(self.out_norm(y))
-        x = semantic_neighbor(y, x_sort_indices_reverse) # SGN-fold
+        # 2.1 squeeze & abstraction
+        # C = (S^T * x) / count
+        cluster_weights = soft_assign.transpose(1, 2) # [B, K, n]
 
-        return x
+        # total weight of each cluster
+        cluster_counts = cluster_weights.sum(dim=2, keepdim=True) + 1e-6
+
+        centroids_in = torch.bmm(cluster_weights, x_norm) / cluster_counts
+
+        # 2.2 run SSM on centroid seq
+        c_hidden = self.global_proj(centroids_in)
+
+        # full zero dummy prompt
+        dummy_prompt_global = torch.zeros(B, self.num_tokens, self.d_state_global, device=x.device) # d_state=64
+
+        c_out_hidden = self.ssm_global(c_hidden, dummy_prompt_global)
+
+        centroids_out = self.global_out(c_out_hidden) # [B, K, C]
+
+        # 2.3 broadcast
+        # X_global = S * C_out
+        # [B, n, K] @ [B, K, C] -> [B, n, C]
+        x_global = torch.bmm(soft_assign, centroids_out)
+
+        # =======================================================
+        # Part 3: Local Stream - n token
+        # =======================================================
+
+        # raw pixel, capture detail, length n
+        l_hidden = self.local_proj(x_norm)
+
+        dummy_prompt_local = torch.zeros(B, n, self.d_state_local, device=x.device) # d_state=8
+
+        l_out_hidden = self.ssm_local(l_hidden, dummy_prompt_local)
+
+        x_local = self.local_out(l_out_hidden)
+
+        # =======================================================
+        # Part 4: Fusion
+        # =======================================================
+
+        # concate [B, n, 2*C] -> [B, n, C]
+        combined = torch.cat([x_local, x_global], dim=-1)
+        out = self.fusion(combined)
+
+        return out
 
 
 class Selective_Scan(nn.Module):
@@ -455,7 +511,6 @@ class AttentiveLayer(nn.Module):
             d_state,
             input_resolution=input_resolution,
             num_tokens=num_tokens,
-            inner_rank=inner_rank,
             mlp_ratio=mlp_ratio
         )
 
@@ -463,9 +518,6 @@ class AttentiveLayer(nn.Module):
 
         self.convffn1 = ConvFFN(in_features=dim, hidden_features=mlp_hidden_dim, kernel_size=convffn_kernel_size, )
         self.convffn2 = ConvFFN(in_features=dim, hidden_features=mlp_hidden_dim, kernel_size=convffn_kernel_size, )
-
-        self.embeddingA = nn.Embedding(self.inner_rank, d_state)
-        self.embeddingA.weight.data.uniform_(-1 / self.inner_rank, 1 / self.inner_rank)
 
     def forward(self, x, x_size, params):
         h, w = x_size
@@ -498,7 +550,7 @@ class AttentiveLayer(nn.Module):
 
         # part2: Attentive State Space
         shortcut = x
-        x_aca = self.assm(self.norm3(x), x_size, self.embeddingA) + x
+        x_aca = self.assm(self.norm3(x), x_size) + x
         x = x_aca + self.convffn2(self.norm4(x_aca), x_size)
         x = shortcut * self.scale2 + x
 
