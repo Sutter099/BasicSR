@@ -444,6 +444,7 @@ class AttentiveLayer(nn.Module):
         self.norm4 = norm_layer(dim)
 
         layer_scale = 1e-4
+        self.scale1 = nn.Parameter(layer_scale * torch.ones(dim), requires_grad=True)
         self.scale2 = nn.Parameter(layer_scale * torch.ones(dim), requires_grad=True)
 
         self.assm = ASSM(
@@ -469,6 +470,7 @@ class AttentiveLayer(nn.Module):
         # -----------------------------------------------------------
         # Part 1: Local Block (NAFBlock)
         # -----------------------------------------------------------
+        shortcut1 = x
         # NAFBlock need [B, C, H, W]
         x_in = x.transpose(1, 2).view(b, c, h, w).contiguous()
 
@@ -476,13 +478,14 @@ class AttentiveLayer(nn.Module):
         x_out = self.local_blocks(x_in)
 
         # resize to [B, N, C] for ASE
-        x = x_out.flatten(2).transpose(1, 2).contiguous()
+        x_naf_out = x_out.flatten(2).transpose(1, 2).contiguous()
+        x = shortcut1 * self.scale1 + x_naf_out
 
         # part2: Attentive State Space
-        shortcut = x
+        shortcut2 = x
         x_aca = self.assm(self.norm3(x), x_size, self.embeddingA) + x
         x = x_aca + self.convffn2(self.norm4(x_aca), x_size)
-        x = shortcut * self.scale2 + x
+        x = shortcut2 * self.scale2 + x
 
         return x
 
