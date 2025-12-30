@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from basicsr.archs.arch_util import to_2tuple, trunc_normal_
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
 from basicsr.utils.registry import ARCH_REGISTRY
+from basicsr.archs.focalnet_arch import FocalModulation
 from einops import rearrange, repeat
 
 
@@ -497,13 +498,15 @@ class AttentiveLayer(nn.Module):
         self.scale1 = nn.Parameter(layer_scale * torch.ones(dim), requires_grad=True)
         self.scale2 = nn.Parameter(layer_scale * torch.ones(dim), requires_grad=True)
 
-        self.wqkv = nn.Linear(dim, 3 * dim, bias=qkv_bias)
-
-        self.win_mhsa = WindowAttention(
-            self.dim,
-            window_size=to_2tuple(self.window_size),
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
+        self.focal_mod = FocalModulation(
+            dim=dim,
+            focal_window=3,
+            focal_level=2,
+            focal_factor=2,
+            bias=True,
+            proj_drop=0.,
+            use_postln_in_modulation=False,
+            normalize_modulator=False,
         )
 
         self.assm = ASSM(
@@ -524,27 +527,19 @@ class AttentiveLayer(nn.Module):
         b, n, c = x.shape
         c3 = 3 * c
 
-        # part1: Window-MHSA
+        # part1: Focal Modulation (Global)
         shortcut = x
         x = self.norm1(x)
-        qkv = self.wqkv(x)
-        qkv = qkv.reshape(b, h, w, c3)
-        if self.shift_size > 0:
-            shifted_qkv = torch.roll(qkv, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
-            attn_mask = params['attn_mask']
-        else:
-            shifted_qkv = qkv
-            attn_mask = None
-        x_windows = window_partition(shifted_qkv, self.window_size)
-        x_windows = x_windows.view(-1, self.window_size * self.window_size, c3)
-        attn_windows = self.win_mhsa(x_windows, rpi=params['rpi_sa'], mask=attn_mask)
-        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, c)
-        shifted_x = window_reverse(attn_windows, self.window_size, h, w)  # b h' w' c
-        if self.shift_size > 0:
-            attn_x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
-        else:
-            attn_x = shifted_x
-        x_win = attn_x.view(b, n, c) + shortcut
+
+        # Reshape for FocalModulation: (B, N, C) -> (B, H, W, C)
+        x = x.view(b, h, w, c)
+
+        # Focal Modulation
+        x = self.focal_mod(x)
+
+        # Reshape back: (B, H, W, C) -> (B, N, C)
+        x_win = x.view(b, n, c) + shortcut
+
         x_win = self.convffn1(self.norm2(x_win), x_size) + x_win
         x = shortcut * self.scale1 + x_win
 
