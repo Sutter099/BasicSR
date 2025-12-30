@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from basicsr.archs.arch_util import to_2tuple, trunc_normal_
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
 from basicsr.utils.registry import ARCH_REGISTRY
+from basicsr.archs.focalnet_arch import FocalModulation
 from einops import rearrange, repeat
 
 
@@ -441,13 +442,15 @@ class AttentiveLayer(nn.Module):
         self.scale1 = nn.Parameter(layer_scale * torch.ones(dim), requires_grad=True)
         self.scale2 = nn.Parameter(layer_scale * torch.ones(dim), requires_grad=True)
 
-        self.wqkv = nn.Linear(dim, 3 * dim, bias=qkv_bias)
-
-        self.win_mhsa = WindowAttention(
-            self.dim,
-            window_size=to_2tuple(self.window_size),
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
+        self.focal_mod = FocalModulation(
+            dim=dim,
+            focal_window=3,
+            focal_level=2,
+            focal_factor=2,
+            bias=True,
+            proj_drop=0.,
+            use_postln_in_modulation=False,
+            normalize_modulator=False,
         )
 
         self.assm = ASSM(
@@ -475,18 +478,18 @@ class AttentiveLayer(nn.Module):
         # part1: Window-MHSA
         shortcut = x
         x = self.norm1(x)
-        qkv = self.wqkv(x)
-        qkv = qkv.reshape(b, h, w, c3)
         if self.shift_size > 0:
-            shifted_qkv = torch.roll(qkv, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+            shifted_x = torch.roll(x.view(b, h, w, c), shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
             attn_mask = params['attn_mask']
         else:
-            shifted_qkv = qkv
+            shifted_x = x.view(b, h, w, c)
             attn_mask = None
-        x_windows = window_partition(shifted_qkv, self.window_size)
-        x_windows = x_windows.view(-1, self.window_size * self.window_size, c3)
-        attn_windows = self.win_mhsa(x_windows, rpi=params['rpi_sa'], mask=attn_mask)
-        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, c)
+        x_windows = window_partition(shifted_x, self.window_size) # B*nW, W, W, C
+        x_windows = x_windows.permute(0, 3, 1, 2).contiguous() # B*nW, C, W, W (FocalModulation expects this?) Wait, FocalModulation forward: x = x.view(B, H, W, C) -> C = x.shape[-1]. So it expects B, H, W, C.
+
+        attn_windows = self.focal_mod(window_partition(shifted_x, self.window_size)) 
+
+        # Output: (B*nW, W, W, C)
         shifted_x = window_reverse(attn_windows, self.window_size, h, w)  # b h' w' c
         if self.shift_size > 0:
             attn_x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
