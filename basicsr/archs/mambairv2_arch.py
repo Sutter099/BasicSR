@@ -561,10 +561,10 @@ class AttentiveLayer(nn.Module):
         x = self.focal_mod(x)
 
         # Reshape back: (B, H, W, C) -> (B, N, C)
-        x_win = x.view(b, n, c) + shortcut
+        x = x.view(b, n, c) + shortcut
 
-        x_win = self.convffn1(self.norm2(x_win), x_size) + x_win
-        x = shortcut * self.scale1 + x_win
+        x = self.convffn1(self.norm2(x), x_size) + x
+        x = shortcut * self.scale1 + x
 
         # part2: Attentive State Space
         shortcut = x
