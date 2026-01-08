@@ -272,6 +272,9 @@ class ASSM(nn.Module):
         # S_ik: probability of i_th pixel belongs to k_th centroid
         soft_assign = F.softmax(logits, dim=-1) # [B, n, K]
 
+        # for visualization
+        self.cluster_ids = torch.argmax(soft_assign, dim=-1).detach().cpu()
+
         # =======================================================
         # Part 2: Global Stream - K token
         # =======================================================
