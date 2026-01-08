@@ -42,7 +42,9 @@ network_g:
   in_chans: 3
   img_size: 64
   img_range: 1.
-  embed_dim: 32
+  embed_dim: 32 # param 2.1M
+  # embed_dim: 64 # param 6.9M
+  # embed_dim: 48 # param 4.2M
   d_state: 16
   depths: [4, 4, 4,4,4,4]
   num_heads: [4,4,4,4,4,4]
