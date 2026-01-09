@@ -499,9 +499,16 @@ class WaveletFocalModulation(nn.Module):
         super().__init__()
         self.dim = dim
 
-        self.low_freq_proc = nn.Sequential(
-            nn.Conv2d(dim, dim, 3, 1, 1, groups=dim),
-            nn.GELU()
+        # improve low freq branch
+        self.low_freq_focal = FocalModulation(
+            dim=dim, # LL nr_channel --> C
+            focal_window=focal_window, # maybe 5 or 7, to capture big object
+            focal_level=focal_level,
+            focal_factor=2,
+            bias=True,
+            proj_drop=0.,
+            use_postln_in_modulation=False,
+            normalize_modulator=False,
         )
 
         self.high_freq_focal = FocalModulation(
@@ -518,16 +525,17 @@ class WaveletFocalModulation(nn.Module):
         self.fusion = nn.Conv2d(dim, dim, 1)
 
     def forward(self, x):
-        # input x:  (B, H, W, C)
-        B, H, W, C = x.shape
-        x = x.permute(0, 3, 1, 2).contiguous()
+        # input x: (B, H, W, C)
+        x_perm = x.permute(0, 3, 1, 2).contiguous()
 
-        wavelet_features = dwt_init(x) # (B, C*4, H/2, W/2)
+        wavelet_features = dwt_init(x_perm) # (B, 4C, H/2, W/2)
 
-        low_f = wavelet_features[:, :C, :, :]
-        high_f = wavelet_features[:, C:, :, :]
+        low_f = wavelet_features[:, :self.dim, :, :] # (B, C, H/2, W/2)
+        high_f = wavelet_features[:, self.dim:, :, :] # (B, 3C, H/2, W/2)
 
-        low_f = self.low_freq_proc(low_f)
+        low_f = low_f.permute(0, 2, 3, 1).contiguous() # (B, H/2, W/2, C)
+        low_f = self.low_freq_focal(low_f)
+        low_f = low_f.permute(0, 3, 1, 2).contiguous() # (B, C, H/2, W/2)
 
         high_f = high_f.permute(0, 2, 3, 1).contiguous()
         high_f = self.high_freq_focal(high_f)
