@@ -495,14 +495,14 @@ def iwt_init(x):
     return h
 
 class WaveletFocalModulation(nn.Module):
-    def __init__(self, dim, focal_window=3, focal_level=2):
+    def __init__(self, dim, focal_window_lowfreq=7, focal_window_highfreq=3, focal_level=2):
         super().__init__()
         self.dim = dim
 
         # improve low freq branch
         self.low_freq_focal = FocalModulation(
             dim=dim, # LL nr_channel --> C
-            focal_window=focal_window, # maybe 5 or 7, to capture big object
+            focal_window=focal_window_lowfreq, # maybe 5 or 7, to capture big object
             focal_level=focal_level,
             focal_factor=2,
             bias=True,
@@ -513,7 +513,7 @@ class WaveletFocalModulation(nn.Module):
 
         self.high_freq_focal = FocalModulation(
             dim=dim * 3,
-            focal_window=focal_window,
+            focal_window=focal_window_highfreq,
             focal_level=focal_level,
             focal_factor=2,
             bias=True,
@@ -591,7 +591,8 @@ class AttentiveLayer(nn.Module):
 
         self.focal_mod = WaveletFocalModulation(
             dim=dim,
-            focal_window=3,
+            focal_window_lowfreq=7,
+            focal_window_highfreq=3,
             focal_level=2
         )
 
