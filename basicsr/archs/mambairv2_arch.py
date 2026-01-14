@@ -494,6 +494,26 @@ def iwt_init(x):
     h[:, :, 1::2, 1::2] = x1 + x2 + x3 + x4
     return h
 
+class CrossFrequencyGating(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.guide_conv = nn.Sequential(
+            nn.Conv2d(dim, dim * 3, 1, bias=True), 
+            nn.Sigmoid()
+        )
+
+    def forward(self, low_feat, high_feat):
+        """
+        Args:
+            low_feat: (B, C, H, W)
+            high_feat: (B, 3C, H, W)
+        """
+        mask = self.guide_conv(low_feat)
+
+        # modulate high freq: background approach 0, object approach 1
+        high_refined = high_feat * mask 
+        return high_refined
+
 class WaveletFocalModulation(nn.Module):
     def __init__(self, dim, focal_window_lowfreq=7, focal_window_highfreq=3, focal_level=2):
         super().__init__()
@@ -522,6 +542,7 @@ class WaveletFocalModulation(nn.Module):
             normalize_modulator=False,
         )
 
+        self.cross_gating = CrossFrequencyGating(dim)
         self.fusion = nn.Conv2d(dim, dim, 1)
 
     def forward(self, x):
@@ -540,6 +561,9 @@ class WaveletFocalModulation(nn.Module):
         high_f = high_f.permute(0, 2, 3, 1).contiguous()
         high_f = self.high_freq_focal(high_f)
         high_f = high_f.permute(0, 3, 1, 2).contiguous()
+
+        # optional
+        high_f = self.cross_gating(low_f, high_f)
 
         out = torch.cat([low_f, high_f], dim=1)
         out = iwt_init(out)
