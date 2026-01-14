@@ -55,11 +55,24 @@ class FocalModulation(nn.Module):
                 
         self.kernel_sizes = []
         for k in range(self.focal_level):
-            kernel_size = self.focal_factor*k + self.focal_window
+            if isinstance(self.focal_window, int):
+                # case 1: square
+                kernel_size = self.focal_factor * k + self.focal_window
+                padding = kernel_size // 2
+            else:
+                # case 2: bar window
+                h, w = self.focal_window
+
+                new_h = h if h == 1 else h + self.focal_factor * k
+                new_w = w if w == 1 else w + self.focal_factor * k
+
+                kernel_size = (new_h, new_w)
+                padding = (new_h // 2, new_w // 2)
+
             self.focal_layers.append(
                 nn.Sequential(
                     nn.Conv2d(dim, dim, kernel_size=kernel_size, stride=1, 
-                    groups=dim, padding=kernel_size//2, bias=False),
+                    groups=dim, padding=padding, bias=False),
                     nn.GELU(),
                     )
                 )              
@@ -113,7 +126,14 @@ class FocalModulation(nn.Module):
 
         # focal convolution
         for k in range(self.focal_level):
-            flops += N * (self.kernel_sizes[k]**2+1) * self.dim
+            # Handle tuple kernel sizes for FLOPs calculation
+            k_size = self.kernel_sizes[k]
+            if isinstance(k_size, tuple):
+                k_area = k_size[0] * k_size[1]
+            else:
+                k_area = k_size ** 2
+            
+            flops += N * (k_area + 1) * self.dim
 
         # global gating
         flops += N * 1 * self.dim 
