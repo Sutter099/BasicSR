@@ -514,6 +514,25 @@ class CrossFrequencyGating(nn.Module):
         high_refined = high_feat * mask 
         return high_refined
 
+class AnisotropicFocalModulation(nn.Module):
+    def __init__(self, dim, kernel_size, focal_level=2, focal_factor=2):
+        super().__init__()
+        # tuple as focal_window
+
+        self.net = FocalModulation(
+            dim=dim,
+            focal_window=kernel_size,
+            focal_level=focal_level,
+            focal_factor=focal_factor,
+            bias=True,
+            proj_drop=0.,
+            use_postln_in_modulation=False,
+            normalize_modulator=False,
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
 class WaveletFocalModulation(nn.Module):
     def __init__(self, dim, focal_window_lowfreq=7, focal_window_highfreq=3, focal_level=2):
         super().__init__()
@@ -531,15 +550,22 @@ class WaveletFocalModulation(nn.Module):
             normalize_modulator=False,
         )
 
-        self.high_freq_focal = FocalModulation(
-            dim=dim * 3,
-            focal_window=focal_window_highfreq,
-            focal_level=focal_level,
-            focal_factor=2,
-            bias=True,
-            proj_drop=0.,
-            use_postln_in_modulation=False,
-            normalize_modulator=False,
+        self.focal_LH = AnisotropicFocalModulation(
+            dim=dim, 
+            kernel_size=(1, focal_window_highfreq), # (H, W) = (1, 5)
+            focal_level=focal_level
+        )
+
+        self.focal_HL = AnisotropicFocalModulation(
+            dim=dim, 
+            kernel_size=(focal_window_highfreq, 1), # (H, W) = (5, 1)
+            focal_level=focal_level
+        )
+
+        self.focal_HH = AnisotropicFocalModulation(
+            dim=dim,
+            kernel_size=3,
+            focal_level=focal_level
         )
 
         self.cross_gating = CrossFrequencyGating(dim)
@@ -551,16 +577,28 @@ class WaveletFocalModulation(nn.Module):
 
         wavelet_features = dwt_init(x_perm) # (B, 4C, H/2, W/2)
 
-        low_f = wavelet_features[:, :self.dim, :, :] # (B, C, H/2, W/2)
-        high_f = wavelet_features[:, self.dim:, :, :] # (B, 3C, H/2, W/2)
+        low_f   = wavelet_features[:, :self.dim, :, :]             # LL
+        high_LH = wavelet_features[:, self.dim:2*self.dim, :, :]   # LH
+        high_HL = wavelet_features[:, 2*self.dim:3*self.dim, :, :] # HL
+        high_HH = wavelet_features[:, 3*self.dim:, :, :]           # HH
 
         low_f = low_f.permute(0, 2, 3, 1).contiguous() # (B, H/2, W/2, C)
         low_f = self.low_freq_focal(low_f)
         low_f = low_f.permute(0, 3, 1, 2).contiguous() # (B, C, H/2, W/2)
 
-        high_f = high_f.permute(0, 2, 3, 1).contiguous()
-        high_f = self.high_freq_focal(high_f)
-        high_f = high_f.permute(0, 3, 1, 2).contiguous()
+        high_LH = high_LH.permute(0, 2, 3, 1).contiguous()
+        high_LH = self.focal_LH(high_LH)
+        high_LH = high_LH.permute(0, 3, 1, 2).contiguous()
+
+        high_HL = high_HL.permute(0, 2, 3, 1).contiguous()
+        high_HL = self.focal_HL(high_HL)
+        high_HL = high_HL.permute(0, 3, 1, 2).contiguous()
+
+        high_HH = high_HH.permute(0, 2, 3, 1).contiguous()
+        high_HH = self.focal_HH(high_HH)
+        high_HH = high_HH.permute(0, 3, 1, 2).contiguous()
+
+        high_f = torch.cat([high_LH, high_HL, high_HH], dim=1)
 
         # optional
         high_f = self.cross_gating(low_f, high_f)
