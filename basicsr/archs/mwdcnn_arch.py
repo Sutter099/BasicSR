@@ -76,3 +76,23 @@ class WMDCNN(nn.Module):
         out = self.conv2(out5)
 
         return y - out
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--n_feats', type=int, default=64)
+    parser.add_argument('--growth_rate', type=int, default=32)
+    parser.add_argument('--RDB_num_layers', type=int, default=4)
+    parser.add_argument('--n_colors', type=int, default=3)
+    parser.add_argument('--debug', action='store_true')
+    args = parser.parse_args()
+
+    model = WMDCNN(args)
+    print(model)
+
+    x = torch.randn(1, 3, 64, 64)
+    y = model(x)
+    print(f'Input shape: {x.shape}')
+    print(f'Output shape: {y.shape}')
