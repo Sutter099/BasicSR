@@ -7,22 +7,17 @@ import torch.nn as nn
 from model_common import common
 from model_common.WRB import WRB
 from model_common.RDB import RDB
+from basicsr.utils.registry import ARCH_REGISTRY
 
-
-def make_model(args):
-    return WMDCNN(args), 1
 
 class WMDCNN(nn.Module):
-    def __init__(self, args, conv=common.default_conv):
+    def __init__(self, n_colors=3, n_feats=64, growth_rate=32, rdb_num_layers=4, debug=False, conv=common.default_conv, **kwargs):
         super(WMDCNN, self).__init__()
 
         kernel_size = 5
-        n_feats = args.n_feats
         dynamic_conv = common.dynamic_conv
-        growth_rate = args.growth_rate
-        rdb_num_layers = args.RDB_num_layers
 
-        self.conv1 = conv(args.n_colors, n_feats, kernel_size)  # conv1
+        self.conv1 = conv(n_colors, n_feats, kernel_size)  # conv1
 
         self.dy_conv_block = nn.Sequential(
             dynamic_conv(n_feats, n_feats, kernel_size),
@@ -34,8 +29,8 @@ class WMDCNN(nn.Module):
             nn.ReLU(True)
         )
 
-        self.WRB1 = WRB(args, n_feats)
-        self.WRB2 = WRB(args, n_feats)
+        self.WRB1 = WRB(n_feats, growth_rate, rdb_num_layers, debug=debug)
+        self.WRB2 = WRB(n_feats, growth_rate, rdb_num_layers, debug=debug)
 
         self.RDB_1 = nn.Sequential(
             RDB(n_feats, growth_rate, rdb_num_layers),
@@ -52,7 +47,7 @@ class WMDCNN(nn.Module):
             nn.ReLU(True)
         )
 
-        self.conv2 = conv(n_feats, args.n_colors, kernel_size)  # conv1
+        self.conv2 = conv(n_feats, n_colors, kernel_size)  # conv1
 
         self.seq = nn.Sequential(
             self.conv1,
@@ -63,6 +58,7 @@ class WMDCNN(nn.Module):
         )
 
     def forward(self, x):
+
         y = x
         
         out1 = self.seq(x)
@@ -77,6 +73,9 @@ class WMDCNN(nn.Module):
 
         return y - out
 
+# Safe registration
+if 'WMDCNN' not in ARCH_REGISTRY:
+    ARCH_REGISTRY.register(WMDCNN)
 
 if __name__ == '__main__':
     import argparse
@@ -89,7 +88,13 @@ if __name__ == '__main__':
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
-    model = WMDCNN(args)
+    model = WMDCNN(
+        n_colors=args.n_colors,
+        n_feats=args.n_feats,
+        growth_rate=args.growth_rate,
+        RDB_num_layers=args.RDB_num_layers,
+        debug=args.debug
+    )
     print(model)
 
     x = torch.randn(1, 3, 64, 64)

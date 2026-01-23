@@ -10,13 +10,13 @@ from pytorch_wavelets import DWTForward, DWTInverse   # (or import DWT, IDWT)
 
 
 class WRB(nn.Module):
-    def __init__(self, args, in_channels, wave='db3'):
+    def __init__(self, in_channels, growth_rate, num_layers, wave='db3', debug=False):
         super(WRB, self).__init__()
 
-        self.args = args
+        self.debug = debug
         n_feats = in_channels*4
-        growth_rate = args.growth_rate
-        num_layers = args.RDB_num_layers
+        growth_rate = growth_rate
+        num_layers = num_layers
 
         self.RDB = RDB(n_feats, growth_rate, num_layers)
 
@@ -52,13 +52,14 @@ class WRB(nn.Module):
 
         out2 = self.RDB(out, False)
 
-        if self.args.debug:
+        if self.debug:
             print("Output2.shape:{}".format(out2.shape)) # 320
 
         out3 = self.conv2(out2)
 
-        if self.args.debug:
+        if self.debug:
             print("Output3.shape:{}".format(out3.shape)) #256
+
 
         out3 = out3+out
 

@@ -22,7 +22,7 @@ class RDB(nn.Module):
         self.layers = nn.Sequential(*[DenseLayer(in_channels + growth_rate * i, growth_rate, kernel_size=kernel_size) for i in range(num_layers)])
 
         # local feature fusion
-        self.lff = nn.Conv2d(in_channels + growth_rate * num_layers, growth_rate, kernel_size=1)  #k=1
+        self.lff = nn.Conv2d(in_channels + growth_rate * num_layers, in_channels, kernel_size=1)  #k=1
 
     def forward(self, x, lrl=True):
         if lrl:
