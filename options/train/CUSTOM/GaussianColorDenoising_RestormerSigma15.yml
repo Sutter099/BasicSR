@@ -60,7 +60,7 @@ network_g:
   type: Restormer
   inp_channels: 3
   out_channels: 3
-  dim: 48
+  dim: 72
   num_blocks: [4,6,6,8]
   num_refinement_blocks: 4
   heads: [1,2,4,8]
@@ -104,9 +104,11 @@ train:
   
   # losses
   pixel_opt:
-    type: PSNRLoss
+    type: CharbonnierLoss
     loss_weight: 1
+    loss_weight: 1.0
     reduction: mean
+    eps: !!float 1e-3
 
 # validation settings
 val:
