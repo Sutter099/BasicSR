@@ -39,9 +39,9 @@ datasets:
 network_g:
   type: WMDCNN
   n_colors: 3
-  n_feats: 64
+  n_feats: 256
   growth_rate: 32
-  rdb_num_layers: 4
+  rdb_num_layers: 16
 
 path:
   pretrain_network_g: ~
