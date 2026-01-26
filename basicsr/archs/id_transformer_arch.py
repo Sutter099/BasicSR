@@ -7,6 +7,7 @@ from torch.nn import init
 
 from einops import rearrange
 
+from basicsr.utils.registry import ARCH_REGISTRY
 
 ##########################################################################
 ## Layer Norm
@@ -287,6 +288,7 @@ class CCABlock(nn.Module):
         out = self.coor(out)
         return out
 
+@ARCH_REGISTRY.register()
 class IDTransformer(nn.Module):
     def __init__(self,
                  inp_channels=1,
