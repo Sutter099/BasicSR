@@ -15,7 +15,7 @@ class LeakyReLUConv2d(nn.Module):
         if norm == 'Instance':
             model += [nn.InstanceNorm2d(out_channels)]
         
-        model += [nn.LeakyReLU(0.2, inplace=True)]
+        model += [nn.LeakyReLU(0.2, inplace=False)]
         self.model = nn.Sequential(*model)
 
     def forward(self, x):

@@ -15,9 +15,6 @@ class HBGMLoss(nn.Module):
         self.idwt = DWTInverse(wave='haar')
 
     def forward(self, a, b):
-        self.dwt = self.dwt.to(a.device)
-        self.idwt = self.idwt.to(a.device)
-        
         yl_a, yh_a = self.dwt(a)
         yl_a = yl_a * 0
         new_yh_a = []

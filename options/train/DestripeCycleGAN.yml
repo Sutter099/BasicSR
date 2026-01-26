@@ -4,14 +4,17 @@ model_type: DestripeGANModel
 scale: 1
 num_gpu: 1
 manual_seed: 0
+find_unused_parameters: true
 
-# Dataset settings
+# dataset and data loader settings
 datasets:
   train:
-    name: Infrared_Unpaired
-    type: UnpairedDataset
-    dataroot_lq: /home/blu/work/repos/DestripeCycleGAN/data/trainA
-    dataroot_gt: /home/blu/work/repos/DestripeCycleGAN/data/trainB
+    name: TrainSet
+    type: PairedImageDataset
+    dataroot_gt: datasets/hm_tir/train/gt
+    dataroot_lq: datasets/hm_tir/train/noise
+
+    filename_tmpl: '{}'
     io_backend:
       type: disk
 
@@ -19,11 +22,21 @@ datasets:
     use_hflip: true
     use_rot: false
 
-    # Dataloader settings
+    # data loader
+    use_shuffle: true
     num_worker_per_gpu: 4
     batch_size_per_gpu: 4
     dataset_enlarge_ratio: 1
     prefetch_mode: ~
+
+  val:
+    name: ValSet
+    type: PairedImageDataset
+    dataroot_gt: datasets/hm_tir/val/gt
+    dataroot_lq: datasets/hm_tir/val/noise
+    io_backend:
+      type: disk
+
 
 # Network settings
 network_g:

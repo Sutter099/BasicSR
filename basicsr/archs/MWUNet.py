@@ -12,7 +12,6 @@ import os
 The Writeness of DWT has been changed
 """
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 class DWT(nn.Module):
     def __init__(self):
@@ -221,9 +220,8 @@ class MWUNet(nn.Module):
         # encoder*****************************************************
         self.head = single_conv(in_ch, 32)
         self.dconv_encode0 = nn.Sequential(single_conv(32, 32), _DCR_block(32))  # → har
-        self.DWT = DWTForward(J=1, wave='haar').cuda()
+        self.DWT = DWTForward(J=1, wave='haar')
         self.dconv_encode1 = nn.Sequential(single_conv(128, 64), _DCR_block(64))  # → har
-        self.DWT = DWTForward(J=1, wave='haar').cuda()
         self.dconv_encode2 = nn.Sequential(single_conv(256, 128), _DCR_block(128))  # → pool
         self.maxpool = nn.MaxPool2d(2)
         self.mid = nn.Sequential(single_conv(512, 256), _DCR_block(256),
@@ -243,7 +241,8 @@ class MWUNet(nn.Module):
             nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2),
             nn.LeakyReLU(inplace=True)
         )
-        self.IDWT = DWTInverse(wave='haar').cuda()
+        self.IDWT = DWTInverse(wave='haar')
+
 
         # skip*****************************************************
         self.GAB1 = group_aggregation_bridge(256, 64)
