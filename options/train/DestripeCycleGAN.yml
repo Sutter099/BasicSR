@@ -18,13 +18,13 @@ datasets:
     io_backend:
       type: disk
 
-    gt_size: 64
-    use_hflip: true
+    gt_size: 128
+    use_hflip: false
     use_rot: false
 
     # data loader
     use_shuffle: true
-    num_worker_per_gpu: 4
+    num_worker_per_gpu: 8
     batch_size_per_gpu: 4
     dataset_enlarge_ratio: 1
     prefetch_mode: ~
@@ -62,12 +62,12 @@ path:
 train:
   optim_g:
     type: Adam
-    lr: !!float 1e-4
+    lr: !!float 3e-4
     betas: [0.5, 0.999]
     weight_decay: !!float 1e-4
   optim_d:
     type: Adam
-    lr: !!float 1e-4
+    lr: !!float 3e-4
     betas: [0.5, 0.999]
     weight_decay: !!float 1e-4
 
@@ -76,7 +76,7 @@ train:
     milestones: [100000, 200000]
     gamma: 0.5
 
-  total_iter: 400000
+  total_iter: 20000
   warmup_iter: -1  # no warm up
 
   # SGM settings
@@ -118,8 +118,12 @@ val:
   save_img: true
 
   metrics:
-    psnr:
+    psnr: # metric name, can be arbitrary
       type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
       crop_border: 0
       test_y_channel: false
 
