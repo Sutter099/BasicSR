@@ -19,16 +19,22 @@ class HBGMLoss(nn.Module):
         self.idwt = self.idwt.to(a.device)
         
         yl_a, yh_a = self.dwt(a)
-        yl_a.zero_()
+        yl_a = yl_a * 0
+        new_yh_a = []
         for i in range(len(yh_a)):
-            yh_a[i][:, :, 1, :, :].zero_()
-        out_a = self.idwt((yl_a, yh_a))
+            mask = torch.ones_like(yh_a[i])
+            mask[:, :, 1, :, :] = 0
+            new_yh_a.append(yh_a[i] * mask)
+        out_a = self.idwt((yl_a, new_yh_a))
 
         yl_b, yh_b = self.dwt(b)
-        yl_b.zero_()
+        yl_b = yl_b * 0
+        new_yh_b = []
         for i in range(len(yh_b)):
-            yh_b[i][:, :, 1, :, :].zero_()
-        out_b = self.idwt((yl_b, yh_b))
+            mask = torch.ones_like(yh_b[i])
+            mask[:, :, 1, :, :] = 0
+            new_yh_b.append(yh_b[i] * mask)
+        out_b = self.idwt((yl_b, new_yh_b))
 
         # Mean Square Error (matches usage in original code)
         loss = F.mse_loss(out_a, out_b)
