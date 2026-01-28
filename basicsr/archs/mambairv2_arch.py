@@ -204,6 +204,78 @@ class WindowAttention(nn.Module):
         return f'dim={self.dim}, window_size={self.window_size}, num_heads={self.num_heads}, qkv_bias={self.qkv_bias}'
 
 
+class DynamicFusion(nn.Module):
+    """Dynamic Attention Fusion for combining local and global streams.
+
+    Uses Global Average Pooling + lightweight MLP to predict channel-wise
+    weighting coefficients for each stream, followed by Softmax normalization.
+
+    Args:
+        dim (int): Number of input channels per stream.
+        reduction (int): Reduction ratio for the MLP bottleneck. Default: 4.
+    """
+
+    def __init__(self, dim, reduction=4):
+        super().__init__()
+        self.dim = dim
+        hidden_dim = max(dim // reduction, 8)  # Ensure minimum hidden size
+
+        # MLP: GAP features -> 2 weights (for local and global)
+        # Input: concatenated GAP of local and global [2*C] -> [hidden] -> [2*C]
+        self.mlp = nn.Sequential(
+            nn.Linear(dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, dim * 2)
+        )
+
+        # Initialize to produce balanced weights initially
+        nn.init.zeros_(self.mlp[-1].weight)
+        nn.init.zeros_(self.mlp[-1].bias)
+
+    def forward(self, x_local, x_global):
+        """
+        Args:
+            x_local: [B, n, C] - local stream features
+            x_global: [B, n, C] - global stream features
+
+        Returns:
+            out: [B, n, C] - fused features
+        """
+        B, n, C = x_local.shape
+
+        # Global Average Pooling over spatial dimension (n = H*W)
+        # [B, n, C] -> [B, C]
+        gap_local = x_local.mean(dim=1)
+        gap_global = x_global.mean(dim=1)
+
+        # Concatenate GAP features: [B, 2*C]
+        gap_concat = torch.cat([gap_local, gap_global], dim=-1)
+
+        # MLP to predict channel-wise weights: [B, 2*C]
+        weights = self.mlp(gap_concat)
+
+        # Split into local and global weights: [B, C] each
+        w_local, w_global = weights.chunk(2, dim=-1)
+
+        # Stack and apply Softmax across the 2 streams for each channel
+        # [B, 2, C] -> Softmax along dim=1 -> [B, 2, C]
+        w_stack = torch.stack([w_local, w_global], dim=1)
+        w_stack = F.softmax(w_stack, dim=1)
+
+        # Extract normalized weights: [B, C] each
+        w_local = w_stack[:, 0, :]  # [B, C]
+        w_global = w_stack[:, 1, :]  # [B, C]
+
+        # Expand weights to match spatial dimension: [B, 1, C]
+        w_local = w_local.unsqueeze(1)
+        w_global = w_global.unsqueeze(1)
+
+        # Weighted fusion: [B, n, C]
+        out = x_local * w_local + x_global * w_global
+
+        return out
+
+
 class ASSM(nn.Module):
     def __init__(self, dim, d_state=16, input_resolution=None, num_tokens=64, mlp_ratio=2.):
         super().__init__()
@@ -251,7 +323,8 @@ class ASSM(nn.Module):
 
         # --- 3. support ---
         self.norm = nn.LayerNorm(dim)
-        self.fusion = nn.Linear(dim * 2, dim)
+        # Dynamic attention fusion (replaces linear concatenation fusion)
+        self.fusion = DynamicFusion(dim, reduction=4)
 
     def forward(self, x, x_size, token=None):
         """
@@ -317,12 +390,10 @@ class ASSM(nn.Module):
         x_local = self.local_out(l_out_hidden)
 
         # =======================================================
-        # Part 4: Fusion
+        # Part 4: Dynamic Attention Fusion
         # =======================================================
 
-        # concate [B, n, 2*C] -> [B, n, C]
-        combined = torch.cat([x_local, x_global], dim=-1)
-        out = self.fusion(combined)
+        out = self.fusion(x_local, x_global)
 
         return out
 
