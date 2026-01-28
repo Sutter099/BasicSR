@@ -568,6 +568,7 @@ class WaveletFocalModulation(nn.Module):
             focal_level=focal_level
         )
 
+        self.align_dwconv = nn.Conv2d(dim * 3, dim * 3, 3, 1, 1, groups=dim * 3)
         self.cross_gating = CrossFrequencyGating(dim)
         self.fusion = nn.Conv2d(dim, dim, 1)
 
@@ -599,6 +600,7 @@ class WaveletFocalModulation(nn.Module):
         high_HH = high_HH.permute(0, 3, 1, 2).contiguous()
 
         high_f = torch.cat([high_LH, high_HL, high_HH], dim=1)
+        high_f = self.align_dwconv(high_f)
 
         # optional
         high_f = self.cross_gating(low_f, high_f)
