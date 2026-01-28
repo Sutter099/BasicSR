@@ -497,10 +497,7 @@ def iwt_init(x):
 class CrossFrequencyGating(nn.Module):
     def __init__(self, dim):
         super().__init__()
-        self.guide_conv = nn.Sequential(
-            nn.Conv2d(dim, dim * 3, 1, bias=True), 
-            nn.Sigmoid()
-        )
+        self.guide_conv = nn.Conv2d(dim, dim * 3, 1, bias=True)
 
     def forward(self, low_feat, high_feat):
         """
@@ -508,10 +505,8 @@ class CrossFrequencyGating(nn.Module):
             low_feat: (B, C, H, W)
             high_feat: (B, 3C, H, W)
         """
-        mask = self.guide_conv(low_feat)
-
-        # modulate high freq: background approach 0, object approach 1
-        high_refined = high_feat * mask 
+        shrinkage_threshold = F.softplus(self.guide_conv(low_feat))
+        high_refined = torch.sign(high_feat) * F.relu(torch.abs(high_feat) - shrinkage_threshold)
         return high_refined
 
 class AnisotropicFocalModulation(nn.Module):
