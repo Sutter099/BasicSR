@@ -1,3 +1,4 @@
+# pyright: ignore
 import math
 import numpy as np
 import torch
@@ -233,6 +234,7 @@ class ASSM(nn.Module):
         self.ssm_local = Selective_Scan(
             d_model=local_hidden,
             d_state=self.d_state_local,
+            K=4,
             expand=1
         )
         self.local_out = nn.Linear(local_hidden, dim)
@@ -245,6 +247,7 @@ class ASSM(nn.Module):
         self.ssm_global = Selective_Scan(
             d_model=global_hidden,
             d_state=self.d_state_global,
+            K=1,
             expand=1
         )
         self.global_out = nn.Linear(global_hidden, dim)
@@ -312,7 +315,7 @@ class ASSM(nn.Module):
 
         dummy_prompt_local = torch.zeros(B, n, self.d_state_local, device=x.device) # d_state=8
 
-        l_out_hidden = self.ssm_local(l_hidden, dummy_prompt_local)
+        l_out_hidden = self.ssm_local(l_hidden, dummy_prompt_local, x_size=x_size)
 
         x_local = self.local_out(l_out_hidden)
 
@@ -332,6 +335,7 @@ class Selective_Scan(nn.Module):
             self,
             d_model,
             d_state=16,
+            K=1,
             expand=2.,
             dt_rank="auto",
             dt_min=0.001,
@@ -347,25 +351,28 @@ class Selective_Scan(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.d_state = d_state
+        self.K = K
         self.expand = expand
         self.d_inner = int(self.expand * self.d_model)
         self.dt_rank = math.ceil(self.d_model / 16) if dt_rank == "auto" else dt_rank
 
-        self.x_proj = (
-            nn.Linear(self.d_inner, (self.dt_rank + self.d_state * 2), bias=False, **factory_kwargs),
-        )
+        self.x_proj = nn.ModuleList([
+            nn.Linear(self.d_inner, (self.dt_rank + self.d_state * 2), bias=False, **factory_kwargs)
+            for _ in range(self.K)
+        ])
         self.x_proj_weight = nn.Parameter(torch.stack([t.weight for t in self.x_proj], dim=0))  # (K=4, N, inner)
         del self.x_proj
 
-        self.dt_projs = (
+        self.dt_projs = nn.ModuleList([
             self.dt_init(self.dt_rank, self.d_inner, dt_scale, dt_init, dt_min, dt_max, dt_init_floor,
-                         **factory_kwargs),
-        )
+                         **factory_kwargs)
+            for _ in range(self.K)
+        ])
         self.dt_projs_weight = nn.Parameter(torch.stack([t.weight for t in self.dt_projs], dim=0))  # (K=4, inner, rank)
         self.dt_projs_bias = nn.Parameter(torch.stack([t.bias for t in self.dt_projs], dim=0))  # (K=4, inner)
         del self.dt_projs
-        self.A_logs = self.A_log_init(self.d_state, self.d_inner, copies=1, merge=True)  # (K=4, D, N)
-        self.Ds = self.D_init(self.d_inner, copies=1, merge=True)  # (K=4, D, N)
+        self.A_logs = self.A_log_init(self.d_state, self.d_inner, copies=self.K, merge=True)  # (K=4, D, N)
+        self.Ds = self.D_init(self.d_inner, copies=self.K, merge=True)  # (K=4, D, N)
         self.selective_scan = selective_scan_fn
 
     @staticmethod
@@ -425,10 +432,25 @@ class Selective_Scan(nn.Module):
         D._no_weight_decay = True
         return D
 
-    def forward_core(self, x: torch.Tensor, prompt):
+    def forward_core(self, x: torch.Tensor, prompt, x_size=None):
         B, L, C = x.shape
-        K = 1  # mambairV2 needs noly 1 scan
-        xs = x.permute(0, 2, 1).view(B, 1, C, L).contiguous()  # B, 1, C ,L
+        K = self.K
+        if K == 1:
+            xs = x.permute(0, 2, 1).view(B, 1, C, L).contiguous()  # B, 1, C ,L
+        else:
+            if x_size is None:
+                raise ValueError('x_size must be provided when K=4.')
+            H, W = x_size
+            x_hw = x.view(B, H, W, C)
+            
+            # 4-way scan
+            h_forward = x
+            h_backward = torch.flip(x, dims=[1])
+            v_forward = rearrange(x_hw, 'b h w c -> b (w h) c')
+            v_backward = torch.flip(v_forward, dims=[1])
+            
+            xs = torch.stack([h_forward, h_backward, v_forward, v_backward], dim=1)
+            xs = xs.permute(0, 1, 3, 2).contiguous()  # B, 4, C, L
 
         x_dbl = torch.einsum("b k d l, k c d -> b k c l", xs.view(B, K, -1, L), self.x_proj_weight)
         dts, Bs, Cs = torch.split(x_dbl, [self.dt_rank, self.d_state, self.d_state], dim=2)
@@ -450,12 +472,25 @@ class Selective_Scan(nn.Module):
         ).view(B, K, -1, L)
         assert out_y.dtype == torch.float
 
-        return out_y[:, 0]
+        if K == 1:
+            return out_y[:, 0]
 
-    def forward(self, x: torch.Tensor, prompt, **kwargs):
+        # Reverse transforms
+        out_y = out_y.permute(0, 1, 3, 2).contiguous()  # B, 4, L, C
+        y_h_forward = out_y[:, 0]
+        y_h_backward = torch.flip(out_y[:, 1], dims=[1])
+        y_v_forward = rearrange(out_y[:, 2], 'b (w h) c -> b (h w) c', h=H, w=W)
+        y_v_backward = rearrange(torch.flip(out_y[:, 3], dims=[1]), 'b (w h) c -> b (h w) c', h=H, w=W)
+        
+        y = y_h_forward + y_h_backward + y_v_forward + y_v_backward
+        return y.permute(0, 2, 1).contiguous()
+
+    def forward(self, x: torch.Tensor, prompt, x_size=None, **kwargs):
         b, l, c = prompt.shape
         prompt = prompt.permute(0, 2, 1).contiguous().view(b, 1, c, l)
-        y = self.forward_core(x, prompt)  # [B, L, C]
+        if self.K > 1:
+            prompt = prompt.expand(-1, self.K, -1, -1)
+        y = self.forward_core(x, prompt, x_size=x_size)  # [B, L, C]
         y = y.permute(0, 2, 1).contiguous()
         return y
 
@@ -1256,4 +1291,3 @@ if __name__ == '__main__':
     _input = torch.randn([2, 3, 64, 64]).cuda()
     output = model(_input).cuda()
     print(output.shape)
-
