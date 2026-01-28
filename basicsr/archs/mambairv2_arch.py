@@ -1,4 +1,3 @@
-# pyright: ignore
 import math
 import numpy as np
 import torch
@@ -313,7 +312,7 @@ class ASSM(nn.Module):
         # raw pixel, capture detail, length n
         l_hidden = self.local_proj(x_norm)
 
-        dummy_prompt_local = torch.zeros(B, n, self.d_state_local, device=x.device) # d_state=8
+        dummy_prompt_local = torch.zeros(B, n, self.d_state_local, device=x.device)
 
         l_out_hidden = self.ssm_local(l_hidden, dummy_prompt_local, x_size=x_size)
 
@@ -360,7 +359,7 @@ class Selective_Scan(nn.Module):
             nn.Linear(self.d_inner, (self.dt_rank + self.d_state * 2), bias=False, **factory_kwargs)
             for _ in range(self.K)
         ])
-        self.x_proj_weight = nn.Parameter(torch.stack([t.weight for t in self.x_proj], dim=0))  # (K=4, N, inner)
+        self.x_proj_weight = nn.Parameter(torch.stack([t.weight for t in self.x_proj], dim=0))  # (K, N, inner)
         del self.x_proj
 
         self.dt_projs = nn.ModuleList([
@@ -368,11 +367,11 @@ class Selective_Scan(nn.Module):
                          **factory_kwargs)
             for _ in range(self.K)
         ])
-        self.dt_projs_weight = nn.Parameter(torch.stack([t.weight for t in self.dt_projs], dim=0))  # (K=4, inner, rank)
-        self.dt_projs_bias = nn.Parameter(torch.stack([t.bias for t in self.dt_projs], dim=0))  # (K=4, inner)
+        self.dt_projs_weight = nn.Parameter(torch.stack([t.weight for t in self.dt_projs], dim=0))  # (K, inner, rank)
+        self.dt_projs_bias = nn.Parameter(torch.stack([t.bias for t in self.dt_projs], dim=0))  # (K, inner)
         del self.dt_projs
-        self.A_logs = self.A_log_init(self.d_state, self.d_inner, copies=self.K, merge=True)  # (K=4, D, N)
-        self.Ds = self.D_init(self.d_inner, copies=self.K, merge=True)  # (K=4, D, N)
+        self.A_logs = self.A_log_init(self.d_state, self.d_inner, copies=self.K, merge=True)  # (K, D, N)
+        self.Ds = self.D_init(self.d_inner, copies=self.K, merge=True)  # (K, D, N)
         self.selective_scan = selective_scan_fn
 
     @staticmethod
@@ -436,7 +435,7 @@ class Selective_Scan(nn.Module):
         B, L, C = x.shape
         K = self.K
         if K == 1:
-            xs = x.permute(0, 2, 1).view(B, 1, C, L).contiguous()  # B, 1, C ,L
+            xs = x.permute(0, 2, 1).view(B, 1, C, L).contiguous()  # B, 1, C, L
         else:
             if x_size is None:
                 raise ValueError('x_size must be provided when K=4.')
@@ -458,7 +457,7 @@ class Selective_Scan(nn.Module):
         xs = xs.float().view(B, -1, L)
         dts = dts.contiguous().float().view(B, -1, L)  # (b, k * d, l)
         Bs = Bs.float().view(B, K, -1, L)
-        #  our ASE here ---
+        # our ASE here
         Cs = Cs.float().view(B, K, -1, L) + prompt  # (b, k, d_state, l)
         Ds = self.Ds.float().view(-1)
         As = -torch.exp(self.A_logs.float()).view(-1, self.d_state)
@@ -1291,3 +1290,4 @@ if __name__ == '__main__':
     _input = torch.randn([2, 3, 64, 64]).cuda()
     output = model(_input).cuda()
     print(output.shape)
+
