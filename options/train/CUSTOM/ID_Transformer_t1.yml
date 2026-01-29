@@ -5,22 +5,16 @@ scale: 1
 num_gpu: 1  # set to 0 for CPU mode
 manual_seed: 0
 
-# dataset and data loader settings
 datasets:
   train:
-    name: TrainSet
+    name: SIDD
     type: PairedImageDataset
-    dataroot_gt: datasets/hm_tir/train/gt
-    dataroot_lq: datasets/hm_tir/train/noise
+    dataroot_gt: datasets/INFRARED_CVC09/train/gt
+    dataroot_lq: datasets/INFRARED_CVC09/train/noise
 
     filename_tmpl: '{}'
     io_backend:
       type: disk
-
-    # data loader
-    use_shuffle: true
-    num_worker_per_gpu: 8
-    batch_size_per_gpu: 4
 
     gt_size: 128
     use_hflip: false
@@ -30,14 +24,14 @@ datasets:
     use_shuffle: true
     num_worker_per_gpu: 8
     batch_size_per_gpu: 4
-    dataset_enlarge_ratio: 1
+    dataset_enlarge_ratio: 10
     prefetch_mode: ~
 
   val:
-    name: ValSet
+    name: SIDD_val
     type: PairedImageDataset
-    dataroot_gt: datasets/hm_tir/val/gt
-    dataroot_lq: datasets/hm_tir/val/noise
+    dataroot_gt: datasets/INFRARED_CVC09/val/gt
+    dataroot_lq: datasets/INFRARED_CVC09/val/noise
     io_backend:
       type: disk
 
@@ -73,7 +67,7 @@ train:
     milestones: [ 6000, 10000, 15000, 18000 ]
     gamma: 0.5
 
-  total_iter: 20000
+  total_iter: 40000
   warmup_iter: -1  # no warm up
 
   # losses
