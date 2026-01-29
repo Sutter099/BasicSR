@@ -50,7 +50,7 @@ network_g:
   num_heads: [4,4,4,4,4,4]
   window_size: 16
   inner_rank: 64
-  num_tokens: 128
+  num_tokens: 32
   convffn_kernel_size: 5
   mlp_ratio: 2.
 
