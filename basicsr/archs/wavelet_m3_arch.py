@@ -976,7 +976,7 @@ class UpsampleOneStep(nn.Sequential):
 
 
 @ARCH_REGISTRY.register()
-class MambaIRv2(nn.Module):
+class wavelet_m3(nn.Module):
     def __init__(self,
                  img_size=64,
                  patch_size=1,
