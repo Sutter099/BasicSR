@@ -1,4 +1,4 @@
-name: DLS_NUC
+name: DLS_NUC_t2
 model_type: ImageRestorationModel
 scale: 1
 num_gpu: 1
@@ -6,7 +6,7 @@ manual_seed: 10
 
 datasets:
   train:
-    name: SIDD
+    name: hm_tir
     type: PairedImageDataset
     dataroot_gt: datasets/hm_tir/train/gt
     dataroot_lq: datasets/hm_tir/train/noise
@@ -27,7 +27,7 @@ datasets:
     prefetch_mode: ~
 
   val:
-    name: SIDD_val
+    name: hm_tir_val
     type: PairedImageDataset
     dataroot_gt: datasets/hm_tir/val/gt
     dataroot_lq: datasets/hm_tir/val/noise
@@ -67,7 +67,6 @@ train:
   # losses
   pixel_opt:
     type: CharbonnierLoss
-    loss_weight: 1
     loss_weight: 1.0
     reduction: mean
     eps: !!float 1e-3

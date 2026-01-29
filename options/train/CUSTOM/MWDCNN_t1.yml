@@ -1,5 +1,5 @@
 # general settings
-name: train_MWDCNN
+name: MWDCNN_t1
 model_type: ImageRestorationModel
 scale: 1
 num_gpu: auto
@@ -7,7 +7,7 @@ manual_seed: 10
 
 datasets:
   train:
-    name: SIDD
+    name: INFRARED_CVC09
     type: PairedImageDataset
     dataroot_gt: datasets/INFRARED_CVC09/train/gt
     dataroot_lq: datasets/INFRARED_CVC09/train/noise
@@ -28,7 +28,7 @@ datasets:
     prefetch_mode: ~
 
   val:
-    name: SIDD_val
+    name: INFRARED_CVC09_val
     type: PairedImageDataset
     dataroot_gt: datasets/INFRARED_CVC09/val/gt
     dataroot_lq: datasets/INFRARED_CVC09/val/noise

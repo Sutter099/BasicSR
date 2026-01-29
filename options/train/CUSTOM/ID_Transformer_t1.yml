@@ -1,5 +1,5 @@
 # General Settings
-name: IDTransformer_Denoising_Sigma15
+name: ID_Transformer_t1
 model_type: ImageRestorationModel
 scale: 1
 num_gpu: 1  # set to 0 for CPU mode
@@ -7,7 +7,7 @@ manual_seed: 0
 
 datasets:
   train:
-    name: SIDD
+    name: INFRARED_CVC09
     type: PairedImageDataset
     dataroot_gt: datasets/INFRARED_CVC09/train/gt
     dataroot_lq: datasets/INFRARED_CVC09/train/noise
@@ -28,7 +28,7 @@ datasets:
     prefetch_mode: ~
 
   val:
-    name: SIDD_val
+    name: INFRARED_CVC09_val
     type: PairedImageDataset
     dataroot_gt: datasets/INFRARED_CVC09/val/gt
     dataroot_lq: datasets/INFRARED_CVC09/val/noise
@@ -73,7 +73,6 @@ train:
   # losses
   pixel_opt:
     type: CharbonnierLoss
-    loss_weight: 1
     loss_weight: 1.0
     reduction: mean
     eps: !!float 1e-3

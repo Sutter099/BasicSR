@@ -1,4 +1,4 @@
-name: MambaIRv2_ColorDN_level15
+name: MambaIR_t2
 model_type: MambaIRv2Model
 scale: 1
 num_gpu: 1
@@ -7,7 +7,7 @@ manual_seed: 10
 
 datasets:
   train:
-    name: SIDD
+    name: hm_tir
     type: PairedImageDataset
     dataroot_gt: datasets/hm_tir/train/gt
     dataroot_lq: datasets/hm_tir/train/noise
@@ -28,7 +28,7 @@ datasets:
     prefetch_mode: ~
 
   val:
-    name: SIDD_val
+    name: hm_tir_val
     type: PairedImageDataset
     dataroot_gt: datasets/hm_tir/val/gt
     dataroot_lq: datasets/hm_tir/val/noise

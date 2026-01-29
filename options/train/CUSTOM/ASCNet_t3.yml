@@ -1,4 +1,4 @@
-name: ASCNet
+name: ASCNet_t3
 model_type: ImageRestorationModel
 scale: 1
 num_gpu: 1
@@ -7,7 +7,7 @@ manual_seed: 10
 # dataset and data loader settings
 datasets:
   train:
-    name: SIDD
+    name: Rivadeneira2020
     type: PairedImageDataset
     dataroot_gt: datasets/Rivadeneira2020/train/gt
     dataroot_lq: datasets/Rivadeneira2020/train/noise
@@ -28,7 +28,7 @@ datasets:
     prefetch_mode: ~
 
   val:
-    name: SIDD_val
+    name: Rivadeneira2020_val
     type: PairedImageDataset
     dataroot_gt: datasets/Rivadeneira2020/val/gt
     dataroot_lq: datasets/Rivadeneira2020/val/noise
@@ -66,7 +66,6 @@ train:
   # losses
   pixel_opt:
     type: CharbonnierLoss
-    loss_weight: 1
     loss_weight: 1.0
     reduction: mean
     eps: !!float 1e-3
