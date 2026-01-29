@@ -18,8 +18,8 @@ datasets:
       type: disk
 
     gt_size: 128
-    use_hflip: false
-    use_rot: false
+    use_hflip: true
+    use_rot: true
 
     # data loader
     use_shuffle: true
