@@ -1,4 +1,4 @@
-name: fm3_multipole_focalnet_b2_hf_residual_hmtir_20k_e104
+name: fm3_multipole_focalnet_b2_var_gate_hmtir_20k_e104
 model_type: MambaIRv2Model
 scale: 1
 num_gpu: 1
