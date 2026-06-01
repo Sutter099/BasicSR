@@ -3,6 +3,7 @@ model_type: MambaIRv2Model
 scale: 1
 num_gpu: 1
 manual_seed: 10
+find_unused_parameters: true
 
 datasets:
   train:
