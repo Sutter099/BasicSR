@@ -422,7 +422,7 @@ class Selective_Scan(nn.Module):
         D._no_weight_decay = True
         return D
 
-    def forward_core(self, x: torch.Tensor, prompt):
+    def forward_core(self, x: torch.Tensor, prompt=None):
         B, L, C = x.shape
         K = 1  # mambairV2 needs noly 1 scan
         xs = x.permute(0, 2, 1).view(B, 1, C, L).contiguous()  # B, 1, C ,L
@@ -434,7 +434,9 @@ class Selective_Scan(nn.Module):
         dts = dts.contiguous().float().view(B, -1, L)  # (b, k * d, l)
         Bs = Bs.float().view(B, K, -1, L)
         #  our ASE here ---
-        Cs = Cs.float().view(B, K, -1, L) + prompt  # (b, k, d_state, l)
+        Cs = Cs.float().view(B, K, -1, L)
+        if prompt is not None:
+            Cs = Cs + prompt  # optional MambaIRv2 ASE prompt; FM3+B2 residual passes None
         Ds = self.Ds.float().view(-1)
         As = -torch.exp(self.A_logs.float()).view(-1, self.d_state)
         dt_projs_bias = self.dt_projs_bias.float().view(-1)  # (k * d)
@@ -449,12 +451,163 @@ class Selective_Scan(nn.Module):
 
         return out_y[:, 0]
 
-    def forward(self, x: torch.Tensor, prompt, **kwargs):
-        b, l, c = prompt.shape
-        prompt = prompt.permute(0, 2, 1).contiguous().view(b, 1, c, l)
+    def forward(self, x: torch.Tensor, prompt=None, **kwargs):
+        if prompt is not None:
+            b, l, c = prompt.shape
+            prompt = prompt.permute(0, 2, 1).contiguous().view(b, 1, c, l)
         y = self.forward_core(x, prompt)  # [B, L, C]
         y = y.permute(0, 2, 1).contiguous()
         return y
+
+
+# -----------------------------------------------------------------------------
+# FM3+B2 experimental residual modules (no MambaIRv2 prompt injection)
+# -----------------------------------------------------------------------------
+def _fm3_b2_index_reverse(index):
+    index_r = torch.zeros_like(index)
+    ind = torch.arange(0, index.shape[-1], device=index.device)
+    for i in range(index.shape[0]):
+        index_r[i, index[i, :]] = ind
+    return index_r
+
+
+def _fm3_b2_normalize_grid(grid_x, grid_y, H, W):
+    gx = 2.0 * grid_x / max(W - 1, 1) - 1.0
+    gy = 2.0 * grid_y / max(H - 1, 1) - 1.0
+    return torch.stack([gx, gy], dim=-1)
+
+
+def _fm3_b2_gather_tokens(x, index):
+    return torch.gather(x, 1, index.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
+
+
+class B2NoPromptDeformResidualBase(nn.Module):
+    def __init__(self, dim, d_state=8, mlp_ratio=1.0, offset_scale=0.20,
+                 use_high_freq=False, use_var_gate=False):
+        super().__init__()
+        hidden = max(dim, int(dim * mlp_ratio))
+        self.dim = dim
+        self.hidden = hidden
+        self.offset_scale = offset_scale
+        self.use_high_freq = use_high_freq
+        self.use_var_gate = use_var_gate
+
+        self.in_proj = nn.Linear(dim, hidden)
+        self.cpe = nn.Conv2d(hidden, hidden, 3, 1, 1, groups=hidden)
+        self.feature_gate = nn.Sequential(nn.Conv2d(hidden, hidden, 1, 1, 0), nn.Sigmoid())
+        self.offset_conv = nn.Sequential(
+            nn.Conv2d(hidden, hidden, 3, 1, 1, groups=hidden),
+            nn.GELU(),
+            nn.Conv2d(hidden, 2, 1, 1, 0),
+        )
+        self.score_head = nn.Conv2d(hidden, 1, 1, 1, 0)
+        self.ssm = Selective_Scan(d_model=hidden, d_state=d_state, expand=1)
+        self.out_norm = nn.LayerNorm(hidden)
+        self.out_proj = nn.Linear(hidden, dim)
+
+        if use_var_gate:
+            self.var_gate = nn.Sequential(
+                nn.Conv2d(1, 1, 3, 1, 1),
+                nn.Sigmoid(),
+            )
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def _prepare_input(self, x, x_size):
+        B, L, C = x.shape
+        H, W = x_size
+        x_map = x.transpose(1, 2).contiguous().view(B, C, H, W)
+        if self.use_high_freq:
+            low = F.avg_pool2d(x_map, kernel_size=3, stride=1, padding=1)
+            x_map = x_map - low
+        x_tokens = x_map.flatten(2).transpose(1, 2).contiguous()
+        return x_tokens, x_map
+
+    def forward(self, x, x_size):
+        B, L, C = x.shape
+        H, W = x_size
+        x_tokens, x_map_raw = self._prepare_input(x, x_size)
+
+        h_tokens = self.in_proj(x_tokens)
+        h_map = h_tokens.transpose(1, 2).contiguous().view(B, self.hidden, H, W)
+        h_map = h_map + self.cpe(h_map)
+        h_map = h_map * self.feature_gate(h_map)
+
+        offsets = torch.tanh(self.offset_conv(h_map)) * self.offset_scale
+        off_y, off_x = offsets[:, 0], offsets[:, 1]
+        base_y, base_x = torch.meshgrid(
+            torch.arange(H, device=x.device, dtype=x.dtype),
+            torch.arange(W, device=x.device, dtype=x.dtype),
+            indexing='ij'
+        )
+        base_y = base_y.unsqueeze(0).expand(B, -1, -1)
+        base_x = base_x.unsqueeze(0).expand(B, -1, -1)
+        sample_y = (base_y + off_y).clamp(0, H - 1)
+        sample_x = (base_x + off_x).clamp(0, W - 1)
+        grid = _fm3_b2_normalize_grid(sample_x, sample_y, H, W)
+
+        sampled_h = F.grid_sample(h_map, grid, mode='bilinear', padding_mode='border', align_corners=True)
+        score = self.score_head(h_map)
+        sampled_score = F.grid_sample(score, grid, mode='bilinear', padding_mode='border', align_corners=True).squeeze(1)
+        sampled_score = sampled_score - sampled_score.mean(dim=(1, 2), keepdim=True)
+        sampled_score = sampled_score / (sampled_score.std(dim=(1, 2), keepdim=True) + 1e-6)
+
+        row_bias = torch.linspace(0.0, 1.0, H, device=x.device, dtype=x.dtype).view(1, H, 1)
+        col_bias = torch.linspace(0.0, 1.0, W, device=x.device, dtype=x.dtype).view(1, 1, W)
+        priority = sampled_score + 0.05 * row_bias + 0.01 * col_bias
+        sort_index = torch.argsort(priority.view(B, -1), dim=-1, descending=False)
+        reverse_index = _fm3_b2_index_reverse(sort_index)
+
+        sampled_tokens = sampled_h.flatten(2).transpose(1, 2).contiguous()
+        scan_tokens = _fm3_b2_gather_tokens(sampled_tokens, sort_index)
+        y = self.ssm(scan_tokens, prompt=None)
+        y = self.out_proj(self.out_norm(y))
+        y = _fm3_b2_gather_tokens(y, reverse_index)
+
+        if self.use_var_gate:
+            var = (x_map_raw - F.avg_pool2d(x_map_raw, 3, 1, 1)).pow(2).mean(dim=1, keepdim=True)
+            gate = self.var_gate(var).flatten(2).transpose(1, 2).contiguous()
+            y = y * gate
+        return self.gamma * y
+
+
+class B2NoPromptDetailResidual(B2NoPromptDeformResidualBase):
+    def __init__(self, dim, d_state=8, mlp_ratio=1.0):
+        super().__init__(dim, d_state=d_state, mlp_ratio=mlp_ratio, offset_scale=0.20,
+                         use_high_freq=False, use_var_gate=False)
+
+
+class B2NoPromptHighFreqResidual(B2NoPromptDeformResidualBase):
+    def __init__(self, dim, d_state=8, mlp_ratio=1.0):
+        super().__init__(dim, d_state=d_state, mlp_ratio=mlp_ratio, offset_scale=0.20,
+                         use_high_freq=True, use_var_gate=False)
+
+
+class B2NoPromptVarianceGateResidual(B2NoPromptDeformResidualBase):
+    def __init__(self, dim, d_state=8, mlp_ratio=1.0):
+        super().__init__(dim, d_state=d_state, mlp_ratio=mlp_ratio, offset_scale=0.20,
+                         use_high_freq=False, use_var_gate=True)
+
+
+class LowFreqBiasResidual(nn.Module):
+    def __init__(self, dim, d_state=8, mlp_ratio=1.0):
+        super().__init__()
+        hidden = max(16, dim // 2)
+        self.net = nn.Sequential(
+            nn.Conv2d(dim, hidden, 1, 1, 0),
+            nn.GELU(),
+            nn.Conv2d(hidden, hidden, 5, 1, 2, groups=hidden),
+            nn.GELU(),
+            nn.Conv2d(hidden, dim, 1, 1, 0),
+        )
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x, x_size):
+        B, L, C = x.shape
+        H, W = x_size
+        x_map = x.transpose(1, 2).contiguous().view(B, C, H, W)
+        low = F.avg_pool2d(x_map, kernel_size=5, stride=1, padding=2)
+        bias = self.net(low).flatten(2).transpose(1, 2).contiguous()
+        return self.gamma * bias
 
 
 class AttentiveLayer(nn.Module):
@@ -509,6 +662,9 @@ class AttentiveLayer(nn.Module):
             normalize_modulator=False,
         )
 
+        self.norm_extra = norm_layer(dim)
+        self.fm3_extra_residual = B2NoPromptHighFreqResidual(dim=dim, d_state=d_state, mlp_ratio=1.0)
+
         self.assm = ASSM(
             self.dim,
             d_state,
@@ -548,6 +704,8 @@ class AttentiveLayer(nn.Module):
         x_aca = self.assm(self.norm3(x), x_size) + x
         x = x_aca + self.convffn2(self.norm4(x_aca), x_size)
         x = shortcut * self.scale2 + x
+
+        x = x + self.fm3_extra_residual(self.norm_extra(x), x_size)
 
         return x
 
